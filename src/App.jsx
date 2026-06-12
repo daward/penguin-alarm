@@ -1,0 +1,625 @@
+import { startTransition, useEffect, useMemo, useState } from "react";
+
+import { PROVIDERS, DEFAULT_CONFIG, QUEUE_FILTERS, RATING_OPTIONS } from "./constants.js";
+import { getAdapter } from "./adapters/index.js";
+import { buildMergedItems, buildQueueItems, computeLeaderboard, computeStats } from "./metrics.js";
+import {
+  clearToken,
+  deleteConfig,
+  exportConfig,
+  getSelectedConfig,
+  importConfig,
+  readConfigs,
+  readRatings,
+  readToken,
+  upsertConfig,
+  writeRating,
+  writeSelectedConfigId,
+  writeToken
+} from "./storage.js";
+
+function formatDate(value) {
+  return value ? new Date(value).toLocaleString() : "n/a";
+}
+
+function relativeTime(value) {
+  if (!value) {
+    return "n/a";
+  }
+
+  const deltaMs = Date.now() - Date.parse(value);
+  const deltaHours = Math.max(0, Math.round(deltaMs / (1000 * 60 * 60)));
+  if (deltaHours < 24) {
+    return `${deltaHours}h ago`;
+  }
+
+  return `${Math.round(deltaHours / 24)}d ago`;
+}
+
+function pullKey(pull) {
+  return `${pull.repoName}#${pull.number}`;
+}
+
+function getRepoInputGuidance(provider) {
+  if (provider === "gitlab") {
+    return {
+      placeholder: "group/project OR gitlab.example.com/group/project",
+      help: "GitLab format: group/project, gitlab.example.com/group/project, or full https URL."
+    };
+  }
+
+  if (provider === "bitbucket") {
+    return {
+      placeholder: "workspace/repo",
+      help: "Bitbucket format: workspace/repo (adapter wiring still pending)."
+    };
+  }
+
+  return {
+    placeholder: "owner/repo OR https://github.com/owner/repo",
+    help: "GitHub format: owner/repo, github.com/owner/repo, or full https URL."
+  };
+}
+
+function getShareUrl(config) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("config", exportConfig(config));
+  return url.toString();
+}
+
+function readSharedConfig() {
+  const url = new URL(window.location.href);
+  const encoded = url.searchParams.get("config");
+  if (!encoded) {
+    return null;
+  }
+
+  try {
+    const config = importConfig(encoded);
+    url.searchParams.delete("config");
+    window.history.replaceState({}, "", url);
+    return config;
+  } catch {
+    return "invalid";
+  }
+}
+
+function useBootstrapState() {
+  const sharedConfig = readSharedConfig();
+  if (sharedConfig && sharedConfig !== "invalid") {
+    upsertConfig(sharedConfig);
+  }
+
+  const selectedConfig = getSelectedConfig();
+  const token = readToken(selectedConfig?.provider || "github");
+
+  return {
+    token,
+    configs: readConfigs(),
+    selectedConfig,
+    ratings: readRatings(),
+    error: sharedConfig === "invalid" ? "Shared config link is invalid." : "",
+    isLoading: false,
+    lastUpdatedAt: "",
+    rateLimit: null,
+    profile: null,
+    queueItems: [],
+    mergedItems: [],
+    stats: null,
+    leaderboard: []
+  };
+}
+
+function StatPanel({ stats }) {
+  if (!stats) {
+    return (
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Team Stats</h2>
+        </div>
+        <p className="muted">Add a token and repos to load metrics.</p>
+      </section>
+    );
+  }
+
+  const rows = [
+    ["Comment rate", stats.commentRate],
+    ["Merge rate", stats.mergeRate],
+    ["First review (hrs)", stats.medianTimeToFirstReview],
+    ["Approval time (hrs)", stats.medianTimeToApproval],
+    ["Merge time (hrs)", stats.medianTimeToMerge]
+  ];
+
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <h2>Team Stats</h2>
+      </div>
+      <div className="stats-list">
+        {rows.map(([label, value]) => (
+          <div className="stat-row" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PullMetaRow({ statusLabel, commentCount, approvalCount }) {
+  return (
+    <div className="meta-row">
+      <span className="meta-tag">{statusLabel}</span>
+      <span className="meta-tag">{commentCount} comments</span>
+      <span className="meta-tag">{approvalCount} approvals</span>
+    </div>
+  );
+}
+
+function PullCard({ pull, subtitle, score, statusLabel, children }) {
+  return (
+    <article className="card">
+      <div className="card-top">
+        <img src={pull.user?.avatar_url} alt={pull.user?.login || "author"} />
+        <div>
+          <a href={pull.html_url} target="_blank" rel="noreferrer">
+            {pull.title}
+          </a>
+          <p className="muted">{subtitle}</p>
+        </div>
+        {typeof score === "number" ? <strong>{score}</strong> : null}
+      </div>
+      <PullMetaRow
+        statusLabel={statusLabel}
+        commentCount={pull.commentCount}
+        approvalCount={pull.approvalCount}
+      />
+      {children}
+    </article>
+  );
+}
+
+function QueuePanel({ items }) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <h2>Review Queue</h2>
+        <span className="badge">{items.length}</span>
+      </div>
+      <div className="card-list">
+        {items.length ? (
+          items.map((pull) => (
+            <PullCard
+              key={pullKey(pull)}
+              pull={pull}
+              subtitle={`${pull.repoName} · ${pull.user?.login} · ${relativeTime(pull.created_at)}`}
+              score={pull.queueScore}
+              statusLabel={pull.draft ? "Draft" : "Ready"}
+            />
+          ))
+        ) : (
+          <p className="muted">No matching pull requests.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function MergedPanel({ items, ratings, onRate }) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <h2>Recently Merged</h2>
+      </div>
+      <div className="card-list">
+        {items.length ? (
+          items.map((pull) => {
+            const key = pullKey(pull);
+            return (
+              <PullCard
+                key={key}
+                pull={pull}
+                subtitle={`${pull.repoName} · merged ${relativeTime(pull.merged_at)}`}
+                statusLabel="Merged"
+              >
+                <div className="rating-row">
+                  {RATING_OPTIONS.map((option) => (
+                    <button
+                      type="button"
+                      key={option.value}
+                      className={ratings[key] === option.value ? "active" : ""}
+                      onClick={() => onRate(key, option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </PullCard>
+            );
+          })
+        ) : (
+          <p className="muted">No merged pull requests in the selected window.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function LeaderboardPanel({ users }) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <h2>Leaderboard</h2>
+      </div>
+      <div className="card-list">
+        {users.length ? (
+          users.slice(0, 12).map((user) => (
+            <article className="card compact-card" key={user.login}>
+              <div className="card-top">
+                <img src={user.avatarUrl} alt={user.login} />
+                <div>
+                  <strong>{user.login}</strong>
+                  <p className="muted">
+                    {user.approvals} approvals · {user.comments} comments
+                  </p>
+                </div>
+                <strong>{user.score}</strong>
+              </div>
+            </article>
+          ))
+        ) : (
+          <p className="muted">Leaderboard data appears after loading repos.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function OpsPanel() {
+  const services = ["custom-calendars-components", "routing-configuration-ui"];
+
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <h2>Production</h2>
+      </div>
+      <div className="stack">
+        <div className="card compact-card">
+          <strong>Open Violations</strong>
+          <p className="muted">The sky is not falling. Wire New Relic and PagerDuty endpoints when ready.</p>
+        </div>
+        <div className="card compact-card">
+          <strong>Recent Deployments</strong>
+          <p className="muted">Deploy stream will appear here when provider integrations are configured.</p>
+        </div>
+        <div className="card compact-card">
+          <strong>Services</strong>
+          <p className="muted">{services.join(" · ")}</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export default function App() {
+  const initialState = useMemo(() => useBootstrapState(), []);
+  const [token, setToken] = useState(initialState.token);
+  const [configs, setConfigs] = useState(initialState.configs);
+  const [selectedConfig, setSelectedConfig] = useState(initialState.selectedConfig);
+  const [ratings, setRatings] = useState(initialState.ratings);
+  const [error, setError] = useState(initialState.error);
+  const [isLoading, setIsLoading] = useState(initialState.isLoading);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(initialState.lastUpdatedAt);
+  const [rateLimit, setRateLimit] = useState(initialState.rateLimit);
+  const [profile, setProfile] = useState(initialState.profile);
+  const [queueItems, setQueueItems] = useState(initialState.queueItems);
+  const [mergedItems, setMergedItems] = useState(initialState.mergedItems);
+  const [stats, setStats] = useState(initialState.stats);
+  const [leaderboard, setLeaderboard] = useState(initialState.leaderboard);
+  const [isSetupOpen, setIsSetupOpen] = useState(
+    () => !(initialState.token && initialState.selectedConfig?.repos?.length)
+  );
+
+  const config = selectedConfig || DEFAULT_CONFIG;
+  const shareUrl = selectedConfig ? getShareUrl(selectedConfig) : "";
+  const adapter = getAdapter(config.provider);
+  const repoInput = getRepoInputGuidance(config.provider);
+
+  useEffect(() => {
+    setToken(readToken(config.provider));
+  }, [config.provider]);
+
+  useEffect(() => {
+    if (!token || !config?.repos.length) {
+      setIsSetupOpen(true);
+    }
+  }, [token, config.id, config.repos.length]);
+
+  async function loadDashboard() {
+    if (!token || !config?.repos.length) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError("");
+
+    try {
+      const { profile: viewerProfile, rateLimit: viewerRateLimit } = await adapter.fetchViewer(token, config);
+      const snapshotResults = await Promise.allSettled(
+        config.repos.map((repo) => adapter.fetchRepoSnapshot(repo, token, config.timeWindowDays))
+      );
+      const snapshots = snapshotResults.filter((result) => result.status === "fulfilled").map((result) => result.value);
+      const failures = snapshotResults.filter((result) => result.status === "rejected");
+
+      if (!snapshots.length && failures.length) {
+        throw failures[0].reason;
+      }
+
+      const openPulls = snapshots.flatMap((snapshot) => snapshot.openPulls);
+      const mergedPulls = snapshots.flatMap((snapshot) => snapshot.mergedPulls);
+
+      startTransition(() => {
+        setProfile(viewerProfile);
+        setRateLimit(snapshots.at(-1)?.rateLimit || viewerRateLimit);
+        setQueueItems(buildQueueItems(openPulls, viewerProfile.login, config.queueFilter));
+        setMergedItems(buildMergedItems(mergedPulls));
+        setStats(computeStats(mergedPulls, openPulls));
+        setLeaderboard(computeLeaderboard([...openPulls, ...mergedPulls]));
+        setLastUpdatedAt(new Date().toISOString());
+        if (failures.length) {
+          setError(`Loaded ${snapshots.length}/${config.repos.length} repos. Some ${adapter.label} requests failed.`);
+        }
+      });
+    } catch (loadError) {
+      setError(loadError.message || String(loadError));
+      setRateLimit(loadError.rateLimit || null);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!token || !config?.repos.length) {
+      return undefined;
+    }
+
+    void loadDashboard();
+    const timer = window.setInterval(() => {
+      void loadDashboard();
+    }, config.pollingMinutes * 60 * 1000);
+
+    return () => window.clearInterval(timer);
+  }, [token, config.id, config.pollingMinutes, config.repos.length]);
+
+  function handleSaveToken(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const nextToken = String(form.get("token") || "");
+    writeToken(config.provider, nextToken);
+    const trimmedToken = nextToken.trim();
+    setToken(trimmedToken);
+    if (trimmedToken && config.repos.length) {
+      setIsSetupOpen(false);
+    }
+  }
+
+  function handleClearToken() {
+    clearToken(config.provider);
+    setToken("");
+    setProfile(null);
+    setQueueItems([]);
+    setMergedItems([]);
+    setLeaderboard([]);
+    setStats(null);
+    setLastUpdatedAt("");
+  }
+
+  function handleConfigSave(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const nextConfig = upsertConfig(Object.fromEntries(form.entries()));
+    setConfigs(readConfigs());
+    setSelectedConfig(nextConfig);
+    const configToken = readToken(nextConfig.provider);
+    if (configToken && nextConfig.repos.length) {
+      setIsSetupOpen(false);
+    }
+  }
+
+  function handleSelectConfig(event) {
+    writeSelectedConfigId(event.target.value);
+    setSelectedConfig(getSelectedConfig());
+  }
+
+  function handleDeleteConfig() {
+    if (!selectedConfig?.id) {
+      return;
+    }
+
+    deleteConfig(selectedConfig.id);
+    const nextSelected = getSelectedConfig();
+    setConfigs(readConfigs());
+    setSelectedConfig(nextSelected);
+    setToken(readToken(nextSelected?.provider || "github"));
+  }
+
+  function handleRate(prKey, rating) {
+    writeRating(prKey, rating);
+    setRatings(readRatings());
+  }
+
+  async function handleCopyShare() {
+    if (!selectedConfig) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(getShareUrl(selectedConfig));
+  }
+
+  return (
+    <main className="shell">
+      <header className="hero">
+        <div>
+          <h1>Penguin Alarm</h1>
+        </div>
+        <div className="hero-status">
+          <span className="badge">{config.repos.length} repos</span>
+          <span className="badge">{lastUpdatedAt ? `Updated ${formatDate(lastUpdatedAt)}` : "Not loaded yet"}</span>
+          <button type="button" className="setup-toggle" onClick={() => setIsSetupOpen((value) => !value)}>
+            {isSetupOpen ? "Hide setup" : "Show setup"}
+          </button>
+        </div>
+      </header>
+
+      {error ? <div className="banner error">{error}</div> : null}
+      {isLoading ? <div className="banner info">Refreshing {adapter.label} data...</div> : null}
+
+      {isSetupOpen ? (
+        <section className="layout-top">
+          <section className="panel">
+          <div className="panel-header">
+            <h2>{adapter.label} Access</h2>
+            {profile ? <span className="badge">{profile.login || profile.username}</span> : null}
+          </div>
+          <p className="muted">Paste a token for this provider. Data stays in your browser storage.</p>
+          <form className="stack" onSubmit={handleSaveToken}>
+            <label>
+              <span>Provider</span>
+              <select value={config.provider} disabled>
+                <option>{adapter.label}</option>
+              </select>
+            </label>
+            <label>
+              <span>Personal access token</span>
+              <input name="token" type="password" placeholder={adapter.tokenPlaceholder} defaultValue={token} />
+            </label>
+            <div className="row">
+              <button type="submit">Save token</button>
+              <button type="button" className="ghost" onClick={handleClearToken}>
+                Clear token
+              </button>
+            </div>
+          </form>
+          {rateLimit ? (
+            <p className="muted">
+              Rate limit: {rateLimit.remaining}/{rateLimit.limit} remaining
+            </p>
+          ) : null}
+          <a href={adapter.docsUrl} target="_blank" rel="noreferrer" className="muted">
+            Token setup docs
+          </a>
+          </section>
+
+          <section className="panel">
+          <div className="panel-header">
+            <h2>Monitor Config</h2>
+            <div className="row compact">
+              <select value={config.id || ""} onChange={handleSelectConfig}>
+                {configs.map((savedConfig) => (
+                  <option value={savedConfig.id} key={savedConfig.id}>
+                    {savedConfig.name}
+                  </option>
+                ))}
+              </select>
+              <button type="button" className="ghost" onClick={() => setSelectedConfig({ ...DEFAULT_CONFIG })}>
+                New
+              </button>
+            </div>
+          </div>
+          <form className="stack" key={config.id || "new"} onSubmit={handleConfigSave}>
+            <input type="hidden" name="id" value={config.id || ""} />
+            <label>
+              <span>Name</span>
+              <input name="name" defaultValue={config.name} />
+            </label>
+            <label>
+              <span>Platform</span>
+              <select name="provider" defaultValue={config.provider}>
+                {PROVIDERS.map((provider) => (
+                  <option value={provider.value} key={provider.value}>
+                    {provider.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Repos</span>
+              <textarea
+                name="repos"
+                rows="5"
+                defaultValue={config.repos.join("\n")}
+                placeholder={repoInput.placeholder}
+              />
+              <span className="muted">{repoInput.help}</span>
+            </label>
+            <label>
+              <span>Repo groups</span>
+              <textarea
+                name="repoGroups"
+                rows="2"
+                defaultValue={config.repoGroups.join("\n")}
+                placeholder="payments, frontend"
+              />
+            </label>
+            <div className="grid two">
+              <label>
+                <span>Time window (days)</span>
+                <input name="timeWindowDays" type="number" min="1" defaultValue={config.timeWindowDays} />
+              </label>
+              <label>
+                <span>Polling (minutes)</span>
+                <input name="pollingMinutes" type="number" min="1" defaultValue={config.pollingMinutes} />
+              </label>
+            </div>
+            <label>
+              <span>Queue filter</span>
+              <select name="queueFilter" defaultValue={config.queueFilter}>
+                {QUEUE_FILTERS.map((filter) => (
+                  <option value={filter.value} key={filter.value}>
+                    {filter.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="row">
+              <button type="submit">Save config</button>
+              <button type="button" className="ghost" disabled={!config.id} onClick={handleDeleteConfig}>
+                Delete
+              </button>
+              <button type="button" className="ghost" onClick={() => void loadDashboard()}>
+                Refresh
+              </button>
+            </div>
+          </form>
+          {shareUrl ? (
+            <div className="share-box">
+              <label>
+                <span>Share link</span>
+                <input readOnly value={shareUrl} />
+              </label>
+              <button type="button" onClick={handleCopyShare}>
+                Copy link
+              </button>
+            </div>
+          ) : (
+            <p className="muted">Save a config to generate a shareable link.</p>
+          )}
+          </section>
+        </section>
+      ) : null}
+
+      <section className="layout-main">
+        <div className="stack">
+          <QueuePanel items={queueItems} />
+          <MergedPanel items={mergedItems} ratings={ratings} onRate={handleRate} />
+        </div>
+        <div className="stack">
+          <StatPanel stats={stats} />
+          <LeaderboardPanel users={leaderboard} />
+        </div>
+        <OpsPanel />
+      </section>
+    </main>
+  );
+}
