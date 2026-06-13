@@ -1,6 +1,6 @@
-const API_ROOT = "https://api.github.com";
+const PUBLIC_API_ROOT = "https://api.github.com";
 
-function normalizeRepoName(value) {
+function normalizeRepoTarget(value) {
   const input = String(value || "").trim();
   if (!input) {
     throw new Error("Repo path is empty.");
@@ -15,7 +15,10 @@ function normalizeRepoName(value) {
       throw new Error("GitHub repo must be in owner/repo format.");
     }
 
-    return `${parts[0]}/${parts[1]}`;
+    return {
+      repoName: `${parts[0]}/${parts[1]}`,
+      host: url.host
+    };
   }
 
   if (trimmed.startsWith("github.com/")) {
@@ -25,7 +28,10 @@ function normalizeRepoName(value) {
       throw new Error("GitHub repo must be in owner/repo format.");
     }
 
-    return `${parts[0]}/${parts[1]}`;
+    return {
+      repoName: `${parts[0]}/${parts[1]}`,
+      host: "github.com"
+    };
   }
 
   const parts = trimmed.replace(/^\/+/, "").split("/").filter(Boolean);
@@ -33,7 +39,29 @@ function normalizeRepoName(value) {
     throw new Error("GitHub repo must be in owner/repo format.");
   }
 
-  return `${parts[0]}/${parts[1]}`;
+  if (parts[0].includes(".")) {
+    return {
+      host: parts[0],
+      repoName: `${parts[1]}/${parts[2] || ""}`.replace(/\/$/, "")
+    };
+  }
+
+  return {
+    repoName: `${parts[0]}/${parts[1]}`,
+    host: "github.com"
+  };
+}
+
+function buildApiRoot(host) {
+  if (!host || host === "github.com") {
+    return PUBLIC_API_ROOT;
+  }
+
+  if (host === "api.github.com") {
+    return PUBLIC_API_ROOT;
+  }
+
+  return `https://${host}/api/v3`;
 }
 
 function parseLinkHeader(value) {
@@ -50,12 +78,12 @@ function parseLinkHeader(value) {
   }, {});
 }
 
-async function requestJson(url, token) {
+async function requestJson(url, token, apiVersionHeader = true) {
   const response = await fetch(url, {
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28"
+      ...(apiVersionHeader ? { "X-GitHub-Api-Version": "2022-11-28" } : {})
     }
   });
 
@@ -87,14 +115,14 @@ async function requestJson(url, token) {
   };
 }
 
-async function paginate(url, token, pageLimit = 3) {
+async function paginate(url, token, pageLimit = 3, apiVersionHeader = true) {
   const items = [];
   let nextUrl = url;
   let lastRateLimit = null;
   let pages = 0;
 
   while (nextUrl && pages < pageLimit) {
-    const { data, rateLimit, links } = await requestJson(nextUrl, token);
+    const { data, rateLimit, links } = await requestJson(nextUrl, token, apiVersionHeader);
     items.push(...data);
     lastRateLimit = rateLimit;
     nextUrl = links.next;
@@ -104,16 +132,21 @@ async function paginate(url, token, pageLimit = 3) {
   return { items, rateLimit: lastRateLimit };
 }
 
-async function fetchViewer(token) {
-  const { data, rateLimit } = await requestJson(`${API_ROOT}/user`, token);
+async function fetchViewer(token, config) {
+  const target = normalizeRepoTarget(config?.repos?.[0] || "owner/repo");
+  const apiRoot = buildApiRoot(target.host);
+  const useApiVersionHeader = apiRoot === PUBLIC_API_ROOT;
+  const { data, rateLimit } = await requestJson(`${apiRoot}/user`, token, useApiVersionHeader);
   return { profile: data, rateLimit };
 }
 
 async function fetchRepoSnapshot(repoName, token, daysBack) {
-  const normalizedRepo = normalizeRepoName(repoName);
+  const { repoName: normalizedRepo, host } = normalizeRepoTarget(repoName);
+  const apiRoot = buildApiRoot(host);
+  const useApiVersionHeader = apiRoot === PUBLIC_API_ROOT;
   const [openPulls, closedPulls] = await Promise.all([
-    paginate(`${API_ROOT}/repos/${normalizedRepo}/pulls?state=open&sort=updated&direction=desc&per_page=30`, token, 2),
-    paginate(`${API_ROOT}/repos/${normalizedRepo}/pulls?state=closed&sort=updated&direction=desc&per_page=30`, token, 3)
+    paginate(`${apiRoot}/repos/${normalizedRepo}/pulls?state=open&sort=updated&direction=desc&per_page=30`, token, 2, useApiVersionHeader),
+    paginate(`${apiRoot}/repos/${normalizedRepo}/pulls?state=closed&sort=updated&direction=desc&per_page=30`, token, 3, useApiVersionHeader)
   ]);
 
   const mergedSince = Date.now() - daysBack * 24 * 60 * 60 * 1000;
@@ -123,9 +156,9 @@ async function fetchRepoSnapshot(repoName, token, daysBack) {
   const detailResponses = await Promise.all(
     candidatePulls.map(async (pull) => {
       const [reviews, comments, issueComments] = await Promise.all([
-        paginate(`${API_ROOT}/repos/${normalizedRepo}/pulls/${pull.number}/reviews?per_page=50`, token, 2),
-        paginate(`${API_ROOT}/repos/${normalizedRepo}/pulls/${pull.number}/comments?per_page=50`, token, 2),
-        paginate(`${API_ROOT}/repos/${normalizedRepo}/issues/${pull.number}/comments?per_page=50`, token, 2)
+        paginate(`${apiRoot}/repos/${normalizedRepo}/pulls/${pull.number}/reviews?per_page=50`, token, 2, useApiVersionHeader),
+        paginate(`${apiRoot}/repos/${normalizedRepo}/pulls/${pull.number}/comments?per_page=50`, token, 2, useApiVersionHeader),
+        paginate(`${apiRoot}/repos/${normalizedRepo}/issues/${pull.number}/comments?per_page=50`, token, 2, useApiVersionHeader)
       ]);
 
       return {

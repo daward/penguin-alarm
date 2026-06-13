@@ -56,8 +56,8 @@ function getRepoInputGuidance(provider) {
   }
 
   return {
-    placeholder: "owner/repo OR https://github.com/owner/repo",
-    help: "GitHub format: owner/repo, github.com/owner/repo, or full https URL."
+    placeholder: "owner/repo OR github.enterprise.com/owner/repo",
+    help: "GitHub format: owner/repo, github.com/owner/repo, github.enterprise.com/owner/repo, or a full https URL."
   };
 }
 
