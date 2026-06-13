@@ -91,13 +91,56 @@ function filterPullsByTeam(pulls, teamMembers) {
 }
 
 function AvatarImage({ src, alt, token }) {
-  const [didFail, setDidFail] = useState(false);
+  const [mode, setMode] = useState("image");
+  const [blobSrc, setBlobSrc] = useState("");
+  const normalizedSrc = String(src || "").replace(/\?$/, "");
 
   useEffect(() => {
-    setDidFail(false);
-  }, [src]);
+    setMode("image");
+    setBlobSrc("");
+  }, [normalizedSrc]);
 
-  if (!src || didFail) {
+  useEffect(() => {
+    if (mode !== "blob" || !normalizedSrc) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    let objectUrl = "";
+
+    async function loadAvatarBlob() {
+      try {
+        const response = await fetch(normalizedSrc, {
+          credentials: "include"
+        });
+
+        if (!response.ok) {
+          throw new Error("Avatar blob fetch failed");
+        }
+
+        const blob = await response.blob();
+        objectUrl = URL.createObjectURL(blob);
+        if (!isCancelled) {
+          setBlobSrc(objectUrl);
+        }
+      } catch {
+        if (!isCancelled) {
+          setMode("fallback");
+        }
+      }
+    }
+
+    void loadAvatarBlob();
+
+    return () => {
+      isCancelled = true;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [mode, normalizedSrc]);
+
+  if (!normalizedSrc || mode === "fallback") {
     return (
       <div className="avatar-fallback" style={getAvatarFallbackStyle(alt)}>
         {getInitials(alt)}
@@ -105,12 +148,16 @@ function AvatarImage({ src, alt, token }) {
     );
   }
 
+  if (mode === "blob" && blobSrc) {
+    return <img src={blobSrc} alt={alt} loading="lazy" />;
+  }
+
   return (
     <img
-      src={src}
+      src={normalizedSrc}
       alt={alt}
       loading="lazy"
-      onError={() => setDidFail(true)}
+      onError={() => setMode("blob")}
     />
   );
 }
