@@ -110,7 +110,6 @@ function AvatarImage({ src, alt, token }) {
       src={src}
       alt={alt}
       loading="lazy"
-      referrerPolicy="no-referrer"
       onError={() => setDidFail(true)}
     />
   );
