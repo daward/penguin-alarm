@@ -40,6 +40,118 @@ function pullKey(pull) {
   return `${pull.repoName}#${pull.number}`;
 }
 
+function getInitials(value) {
+  const parts = String(value || "")
+    .trim()
+    .split(/\s+|[._-]+/)
+    .filter(Boolean);
+
+  if (!parts.length) {
+    return "?";
+  }
+
+  return parts
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("");
+}
+
+function hashString(value) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function getAvatarFallbackStyle(value) {
+  const palette = [
+    { background: "rgba(88, 208, 255, 0.18)", color: "#d8f6ff" },
+    { background: "rgba(246, 196, 83, 0.18)", color: "#fff0c4" },
+    { background: "rgba(152, 230, 168, 0.18)", color: "#e3ffe9" },
+    { background: "rgba(191, 128, 255, 0.18)", color: "#f0e4ff" },
+    { background: "rgba(255, 147, 122, 0.18)", color: "#ffe4df" }
+  ];
+
+  return palette[hashString(String(value || "").toLowerCase()) % palette.length];
+}
+
+function normalizeLogin(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function filterPullsByTeam(pulls, teamMembers) {
+  const members = teamMembers.map(normalizeLogin).filter(Boolean);
+  if (!members.length) {
+    return pulls;
+  }
+
+  const memberSet = new Set(members);
+  return pulls.filter((pull) => memberSet.has(normalizeLogin(pull.user?.login)));
+}
+
+function AvatarImage({ src, alt, token }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src || "");
+
+  useEffect(() => {
+    if (!src) {
+      setResolvedSrc("");
+      return undefined;
+    }
+
+    if (!token || !String(src).startsWith("http")) {
+      setResolvedSrc(src);
+      return undefined;
+    }
+
+    let isCancelled = false;
+    let objectUrl = "";
+
+    async function loadAvatar() {
+      try {
+        const response = await fetch(src, {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error("Avatar fetch failed");
+        }
+
+        const blob = await response.blob();
+        objectUrl = URL.createObjectURL(blob);
+        if (!isCancelled) {
+          setResolvedSrc(objectUrl);
+        }
+      } catch {
+        if (!isCancelled) {
+          setResolvedSrc(src);
+        }
+      }
+    }
+
+    void loadAvatar();
+
+    return () => {
+      isCancelled = true;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [src, token]);
+
+  if (!resolvedSrc) {
+    return (
+      <div className="avatar-fallback" style={getAvatarFallbackStyle(alt)}>
+        {getInitials(alt)}
+      </div>
+    );
+  }
+
+  return <img src={resolvedSrc} alt={alt} loading="lazy" referrerPolicy="no-referrer" />;
+}
+
 function getRepoInputGuidance(provider) {
   if (provider === "gitlab") {
     return {
@@ -157,11 +269,11 @@ function PullMetaRow({ statusLabel, commentCount, approvalCount }) {
   );
 }
 
-function PullCard({ pull, subtitle, score, statusLabel, children }) {
+function PullCard({ pull, subtitle, score, statusLabel, children, token }) {
   return (
     <article className="card">
       <div className="card-top">
-        <img src={pull.user?.avatar_url} alt={pull.user?.login || "author"} />
+        <AvatarImage src={pull.user?.avatar_url} alt={pull.user?.login || "author"} token={token} />
         <div>
           <a href={pull.html_url} target="_blank" rel="noreferrer">
             {pull.title}
@@ -180,7 +292,7 @@ function PullCard({ pull, subtitle, score, statusLabel, children }) {
   );
 }
 
-function QueuePanel({ items }) {
+function QueuePanel({ items, token }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -196,6 +308,7 @@ function QueuePanel({ items }) {
               subtitle={`${pull.repoName} · ${pull.user?.login} · ${relativeTime(pull.created_at)}`}
               score={pull.queueScore}
               statusLabel={pull.draft ? "Draft" : "Ready"}
+              token={token}
             />
           ))
         ) : (
@@ -206,7 +319,7 @@ function QueuePanel({ items }) {
   );
 }
 
-function MergedPanel({ items, ratings, onRate }) {
+function MergedPanel({ items, ratings, onRate, token }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -222,6 +335,7 @@ function MergedPanel({ items, ratings, onRate }) {
                 pull={pull}
                 subtitle={`${pull.repoName} · merged ${relativeTime(pull.merged_at)}`}
                 statusLabel="Merged"
+                token={token}
               >
                 <div className="rating-row">
                   {RATING_OPTIONS.map((option) => (
@@ -246,7 +360,7 @@ function MergedPanel({ items, ratings, onRate }) {
   );
 }
 
-function LeaderboardPanel({ users }) {
+function LeaderboardPanel({ users, token }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -257,7 +371,7 @@ function LeaderboardPanel({ users }) {
           users.slice(0, 12).map((user) => (
             <article className="card compact-card" key={user.login}>
               <div className="card-top">
-                <img src={user.avatarUrl} alt={user.login} />
+                <AvatarImage src={user.avatarUrl} alt={user.login} token={token} />
                 <div>
                   <strong>{user.login}</strong>
                   <p className="muted">
@@ -358,14 +472,17 @@ export default function App() {
 
       const openPulls = snapshots.flatMap((snapshot) => snapshot.openPulls);
       const mergedPulls = snapshots.flatMap((snapshot) => snapshot.mergedPulls);
+      const teamMembers = config.teamMembers || [];
+      const scopedOpenPulls = filterPullsByTeam(openPulls, teamMembers);
+      const scopedMergedPulls = filterPullsByTeam(mergedPulls, teamMembers);
 
       startTransition(() => {
         setProfile(viewerProfile);
         setRateLimit(snapshots.at(-1)?.rateLimit || viewerRateLimit);
-        setQueueItems(buildQueueItems(openPulls, viewerProfile.login, config.queueFilter));
-        setMergedItems(buildMergedItems(mergedPulls));
-        setStats(computeStats(mergedPulls, openPulls));
-        setLeaderboard(computeLeaderboard([...openPulls, ...mergedPulls]));
+        setQueueItems(buildQueueItems(scopedOpenPulls, viewerProfile.login, config.queueFilter));
+        setMergedItems(buildMergedItems(scopedMergedPulls));
+        setStats(computeStats(scopedMergedPulls, scopedOpenPulls));
+        setLeaderboard(computeLeaderboard([...scopedOpenPulls, ...scopedMergedPulls]));
         setLastUpdatedAt(new Date().toISOString());
         if (failures.length) {
           setError(`Loaded ${snapshots.length}/${config.repos.length} repos. Some ${adapter.label} requests failed.`);
@@ -554,6 +671,16 @@ export default function App() {
               <span className="muted">{repoInput.help}</span>
             </label>
             <label>
+              <span>Team members</span>
+              <textarea
+                name="teamMembers"
+                rows="4"
+                defaultValue={(config.teamMembers || []).join("\n")}
+                placeholder="alice\nbob\ncarol"
+              />
+              <span className="muted">Only PRs opened by these usernames will show up in the dashboard.</span>
+            </label>
+            <label>
               <span>Repo groups</span>
               <textarea
                 name="repoGroups"
@@ -611,12 +738,12 @@ export default function App() {
 
       <section className="layout-main">
         <div className="stack">
-          <QueuePanel items={queueItems} />
-          <MergedPanel items={mergedItems} ratings={ratings} onRate={handleRate} />
+          <QueuePanel items={queueItems} token={token} />
+          <MergedPanel items={mergedItems} ratings={ratings} onRate={handleRate} token={token} />
         </div>
         <div className="stack">
           <StatPanel stats={stats} />
-          <LeaderboardPanel users={leaderboard} />
+          <LeaderboardPanel users={leaderboard} token={token} />
         </div>
         <OpsPanel />
       </section>

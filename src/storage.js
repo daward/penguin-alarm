@@ -64,6 +64,13 @@ export function normalizeConfig(config) {
     .map((repo) => repo.trim())
     .filter(Boolean);
 
+  const teamMembers = Array.isArray(config.teamMembers)
+    ? config.teamMembers.map((member) => String(member || "").trim()).filter(Boolean)
+    : String(config.teamMembers || "")
+        .split(/\r?\n|,/)
+        .map((member) => member.trim())
+        .filter(Boolean);
+
   const repoGroups = String(config.repoGroups || "")
     .split(/\r?\n|,/)
     .map((group) => group.trim())
@@ -76,6 +83,7 @@ export function normalizeConfig(config) {
     name: (config.name || DEFAULT_CONFIG.name).trim(),
     provider: String(config.provider || DEFAULT_CONFIG.provider),
     repos,
+    teamMembers,
     repoGroups,
     timeWindowDays: Math.max(1, Number(config.timeWindowDays) || DEFAULT_CONFIG.timeWindowDays),
     pollingMinutes: Math.max(1, Number(config.pollingMinutes) || DEFAULT_CONFIG.pollingMinutes)

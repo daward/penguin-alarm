@@ -10,6 +10,7 @@ export const DEFAULT_CONFIG = {
   name: "My Review Set",
   provider: "github",
   repos: [],
+  teamMembers: [],
   repoGroups: [],
   timeWindowDays: 14,
   queueFilter: "all",

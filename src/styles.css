@@ -301,6 +301,18 @@ label span {
   border: 1px solid var(--border);
 }
 
+.avatar-fallback {
+  width: 52px;
+  height: 52px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+}
+
 .card-top {
   align-items: flex-start;
 }
