@@ -91,57 +91,13 @@ function filterPullsByTeam(pulls, teamMembers) {
 }
 
 function AvatarImage({ src, alt, token }) {
-  const [resolvedSrc, setResolvedSrc] = useState(src || "");
+  const [didFail, setDidFail] = useState(false);
 
   useEffect(() => {
-    if (!src) {
-      setResolvedSrc("");
-      return undefined;
-    }
+    setDidFail(false);
+  }, [src]);
 
-    if (!token || !String(src).startsWith("http")) {
-      setResolvedSrc(src);
-      return undefined;
-    }
-
-    let isCancelled = false;
-    let objectUrl = "";
-
-    async function loadAvatar() {
-      try {
-        const response = await fetch(src, {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        });
-
-        if (!response.ok) {
-          throw new Error("Avatar fetch failed");
-        }
-
-        const blob = await response.blob();
-        objectUrl = URL.createObjectURL(blob);
-        if (!isCancelled) {
-          setResolvedSrc(objectUrl);
-        }
-      } catch {
-        if (!isCancelled) {
-          setResolvedSrc(src);
-        }
-      }
-    }
-
-    void loadAvatar();
-
-    return () => {
-      isCancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [src, token]);
-
-  if (!resolvedSrc) {
+  if (!src || didFail) {
     return (
       <div className="avatar-fallback" style={getAvatarFallbackStyle(alt)}>
         {getInitials(alt)}
@@ -149,7 +105,15 @@ function AvatarImage({ src, alt, token }) {
     );
   }
 
-  return <img src={resolvedSrc} alt={alt} loading="lazy" referrerPolicy="no-referrer" />;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setDidFail(true)}
+    />
+  );
 }
 
 function getRepoInputGuidance(provider) {
