@@ -438,6 +438,11 @@ export default function App() {
   );
 
   const config = selectedConfig || DEFAULT_CONFIG;
+  const headerConfigOptions = configs.some((item) => item.id === config.id)
+    ? configs
+    : config.id
+      ? [config, ...configs]
+      : configs;
   const shareUrl = selectedConfig ? getShareUrl(selectedConfig) : "";
   const adapter = getAdapter(config.provider);
   const tokenAdapter = getAdapter(tokenProvider);
@@ -610,10 +615,28 @@ export default function App() {
           <h1>Penguin Alarm</h1>
         </div>
         <div className="hero-status">
+          <label className="header-config-switcher" aria-label="Switch monitor configuration">
+            <select value={config.id || ""} onChange={handleSelectConfig} disabled={!headerConfigOptions.length}>
+              {headerConfigOptions.map((savedConfig) => (
+                <option value={savedConfig.id} key={savedConfig.id}>
+                  {savedConfig.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <span className="badge">{config.repos.length} repos</span>
           <span className="badge">{lastUpdatedAt ? `Updated ${formatDate(lastUpdatedAt)}` : "Not loaded yet"}</span>
-          <button type="button" className="setup-toggle" onClick={() => setIsSetupOpen((value) => !value)}>
-            {isSetupOpen ? "Hide setup" : "Show setup"}
+          <button
+            type="button"
+            className="setup-toggle"
+            aria-label={isSetupOpen ? "Hide setup" : "Show setup"}
+            title={isSetupOpen ? "Hide setup" : "Show setup"}
+            onClick={() => setIsSetupOpen((value) => !value)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M19.4 13a7.8 7.8 0 0 0 .1-1l2-1.6-2-3.4-2.4 1a7.8 7.8 0 0 0-1.7-1l-.4-2.5h-4l-.4 2.5a7.8 7.8 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.8 7.8 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.8 7.8 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.8 7.8 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6ZM12 15.4A3.4 3.4 0 1 1 12 8.6a3.4 3.4 0 0 1 0 6.8Z" />
+            </svg>
+            <span className="sr-only">{isSetupOpen ? "Hide setup" : "Show setup"}</span>
           </button>
         </div>
       </header>
