@@ -4,6 +4,7 @@ import { PROVIDERS, DEFAULT_CONFIG, QUEUE_FILTERS, RATING_OPTIONS } from "./cons
 import { getAdapter } from "./adapters/index.js";
 import { buildMergedItems, buildQueueItems, computeLeaderboard, computeStats } from "./metrics.js";
 import {
+  createId,
   clearToken,
   deleteConfig,
   exportConfig,
@@ -160,7 +161,7 @@ function useBootstrapState() {
   }
 
   const selectedConfig = getSelectedConfig();
-  const token = readToken(selectedConfig?.provider || "github");
+  const token = readToken(selectedConfig?.provider || "github", selectedConfig?.id || "");
 
   return {
     token,
@@ -180,6 +181,12 @@ function useBootstrapState() {
 }
 
 function StatPanel({ stats }) {
+  const [timeMetricMode, setTimeMetricMode] = useState({
+    firstReview: "median",
+    approval: "median",
+    merge: "median"
+  });
+
   if (!stats) {
     return (
       <section className="panel">
@@ -191,12 +198,32 @@ function StatPanel({ stats }) {
     );
   }
 
+  function toggleMetric(metricKey) {
+    setTimeMetricMode((current) => ({
+      ...current,
+      [metricKey]: current[metricKey] === "median" ? "average" : "median"
+    }));
+  }
+
   const rows = [
-    ["Comment rate", stats.commentRate],
-    ["Merge rate", stats.mergeRate],
-    ["First review (hrs)", stats.medianTimeToFirstReview],
-    ["Approval time (hrs)", stats.medianTimeToApproval],
-    ["Merge time (hrs)", stats.medianTimeToMerge]
+    { label: "Comment rate", value: stats.commentRate },
+    { label: "Merge rate", value: stats.mergeRate },
+    {
+      label: `${timeMetricMode.firstReview === "median" ? "Median" : "Average"} first review (hrs)`,
+      value:
+        timeMetricMode.firstReview === "median" ? stats.medianTimeToFirstReview : stats.averageTimeToFirstReview,
+      metricKey: "firstReview"
+    },
+    {
+      label: `${timeMetricMode.approval === "median" ? "Median" : "Average"} approval time (hrs)`,
+      value: timeMetricMode.approval === "median" ? stats.medianTimeToApproval : stats.averageTimeToApproval,
+      metricKey: "approval"
+    },
+    {
+      label: `${timeMetricMode.merge === "median" ? "Median" : "Average"} merge time (hrs)`,
+      value: timeMetricMode.merge === "median" ? stats.medianTimeToMerge : stats.averageTimeToMerge,
+      metricKey: "merge"
+    }
   ];
 
   return (
@@ -205,12 +232,28 @@ function StatPanel({ stats }) {
         <h2>Team Stats</h2>
       </div>
       <div className="stats-list">
-        {rows.map(([label, value]) => (
-          <div className="stat-row" key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </div>
-        ))}
+        {rows.map((row) => {
+          if (!row.metricKey) {
+            return (
+              <div className="stat-row" key={row.label}>
+                <span>{row.label}</span>
+                <strong>{row.value}</strong>
+              </div>
+            );
+          }
+
+          return (
+            <button
+              type="button"
+              className="stat-row stat-row-toggle"
+              key={row.metricKey}
+              onClick={() => toggleMetric(row.metricKey)}
+            >
+              <span>{row.label}</span>
+              <strong>{row.value}</strong>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
@@ -376,6 +419,8 @@ function OpsPanel() {
 export default function App() {
   const initialState = useMemo(() => useBootstrapState(), []);
   const [token, setToken] = useState(initialState.token);
+  const [tokenProvider, setTokenProvider] = useState(initialState.selectedConfig?.provider || "github");
+  const [tokenDraft, setTokenDraft] = useState(initialState.token);
   const [configs, setConfigs] = useState(initialState.configs);
   const [selectedConfig, setSelectedConfig] = useState(initialState.selectedConfig);
   const [ratings, setRatings] = useState(initialState.ratings);
@@ -395,11 +440,19 @@ export default function App() {
   const config = selectedConfig || DEFAULT_CONFIG;
   const shareUrl = selectedConfig ? getShareUrl(selectedConfig) : "";
   const adapter = getAdapter(config.provider);
+  const tokenAdapter = getAdapter(tokenProvider);
   const repoInput = getRepoInputGuidance(config.provider);
 
   useEffect(() => {
-    setToken(readToken(config.provider));
-  }, [config.provider]);
+    const activeToken = readToken(config.provider, config.id || "");
+    setToken(activeToken);
+    setTokenProvider(config.provider);
+    setTokenDraft(activeToken);
+  }, [config.provider, config.id]);
+
+  useEffect(() => {
+    setTokenDraft(readToken(tokenProvider, config.id || ""));
+  }, [tokenProvider, config.id]);
 
   useEffect(() => {
     if (!token || !config?.repos.length) {
@@ -464,29 +517,38 @@ export default function App() {
     }, config.pollingMinutes * 60 * 1000);
 
     return () => window.clearInterval(timer);
-  }, [token, config.id, config.pollingMinutes, config.repos.length]);
+  }, [token, config.id, config.provider, config.pollingMinutes, config.repos.length]);
 
   function handleSaveToken(event) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const nextToken = String(form.get("token") || "");
-    writeToken(config.provider, nextToken);
-    const trimmedToken = nextToken.trim();
-    setToken(trimmedToken);
-    if (trimmedToken && config.repos.length) {
+    writeToken(tokenProvider, tokenDraft, config.id || "");
+    const trimmedToken = String(tokenDraft || "").trim();
+    setTokenDraft(trimmedToken);
+
+    if (tokenProvider === config.provider) {
+      setToken(trimmedToken);
+    }
+
+    const activeConfigToken =
+      tokenProvider === config.provider ? trimmedToken : readToken(config.provider, config.id || "");
+    if (activeConfigToken && config.repos.length) {
       setIsSetupOpen(false);
     }
   }
 
   function handleClearToken() {
-    clearToken(config.provider);
-    setToken("");
-    setProfile(null);
-    setQueueItems([]);
-    setMergedItems([]);
-    setLeaderboard([]);
-    setStats(null);
-    setLastUpdatedAt("");
+    clearToken(tokenProvider, config.id || "");
+    setTokenDraft("");
+
+    if (tokenProvider === config.provider) {
+      setToken("");
+      setProfile(null);
+      setQueueItems([]);
+      setMergedItems([]);
+      setLeaderboard([]);
+      setStats(null);
+      setLastUpdatedAt("");
+    }
   }
 
   function handleConfigSave(event) {
@@ -495,7 +557,10 @@ export default function App() {
     const nextConfig = upsertConfig(Object.fromEntries(form.entries()));
     setConfigs(readConfigs());
     setSelectedConfig(nextConfig);
-    const configToken = readToken(nextConfig.provider);
+    const configToken = readToken(nextConfig.provider, nextConfig.id || "");
+    setToken(configToken);
+    setTokenProvider(nextConfig.provider);
+    setTokenDraft(configToken);
     if (configToken && nextConfig.repos.length) {
       setIsSetupOpen(false);
     }
@@ -503,7 +568,14 @@ export default function App() {
 
   function handleSelectConfig(event) {
     writeSelectedConfigId(event.target.value);
-    setSelectedConfig(getSelectedConfig());
+    const nextSelected = getSelectedConfig();
+    const nextProvider = nextSelected?.provider || "github";
+    const nextToken = readToken(nextProvider, nextSelected?.id || "");
+
+    setSelectedConfig(nextSelected);
+    setToken(nextToken);
+    setTokenProvider(nextProvider);
+    setTokenDraft(nextToken);
   }
 
   function handleDeleteConfig() {
@@ -515,7 +587,7 @@ export default function App() {
     const nextSelected = getSelectedConfig();
     setConfigs(readConfigs());
     setSelectedConfig(nextSelected);
-    setToken(readToken(nextSelected?.provider || "github"));
+    setToken(readToken(nextSelected?.provider || "github", nextSelected?.id || ""));
   }
 
   function handleRate(prKey, rating) {
@@ -553,20 +625,32 @@ export default function App() {
         <section className="layout-top">
           <section className="panel">
           <div className="panel-header">
-            <h2>{adapter.label} Access</h2>
-            {profile ? <span className="badge">{profile.login || profile.username}</span> : null}
+            <h2>{tokenAdapter.label} Access</h2>
+            {profile && tokenProvider === config.provider ? (
+              <span className="badge">{profile.login || profile.username}</span>
+            ) : null}
           </div>
           <p className="muted">Paste a token for this provider. Data stays in your browser storage.</p>
           <form className="stack" onSubmit={handleSaveToken}>
             <label>
               <span>Provider</span>
-              <select value={config.provider} disabled>
-                <option>{adapter.label}</option>
+              <select value={tokenProvider} onChange={(event) => setTokenProvider(event.target.value)}>
+                {PROVIDERS.map((provider) => (
+                  <option value={provider.value} key={provider.value}>
+                    {provider.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label>
               <span>Personal access token</span>
-              <input name="token" type="password" placeholder={adapter.tokenPlaceholder} defaultValue={token} />
+              <input
+                name="token"
+                type="password"
+                placeholder={tokenAdapter.tokenPlaceholder}
+                value={tokenDraft}
+                onChange={(event) => setTokenDraft(event.target.value)}
+              />
             </label>
             <div className="row">
               <button type="submit">Save token</button>
@@ -575,12 +659,12 @@ export default function App() {
               </button>
             </div>
           </form>
-          {rateLimit ? (
+          {rateLimit && tokenProvider === config.provider ? (
             <p className="muted">
               Rate limit: {rateLimit.remaining}/{rateLimit.limit} remaining
             </p>
           ) : null}
-          <a href={adapter.docsUrl} target="_blank" rel="noreferrer" className="muted">
+          <a href={tokenAdapter.docsUrl} target="_blank" rel="noreferrer" className="muted">
             Token setup docs
           </a>
           </section>
@@ -596,7 +680,11 @@ export default function App() {
                   </option>
                 ))}
               </select>
-              <button type="button" className="ghost" onClick={() => setSelectedConfig({ ...DEFAULT_CONFIG })}>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setSelectedConfig({ ...DEFAULT_CONFIG, id: createId() })}
+              >
                 New
               </button>
             </div>

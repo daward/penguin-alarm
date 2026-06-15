@@ -26,26 +26,41 @@ export function readProviderTokens(storage = localStorage) {
   return tokens;
 }
 
-export function readToken(provider = "github", storage = localStorage) {
-  return readProviderTokens(storage)[provider] || "";
+function buildScopedTokenKey(provider, configId) {
+  return `${provider}::${configId}`;
 }
 
-export function writeToken(provider, token, storage = localStorage) {
+export function readToken(provider = "github", configId = "", storage = localStorage) {
+  const tokens = readProviderTokens(storage);
+  const normalizedConfigId = String(configId || "").trim();
+  if (normalizedConfigId) {
+    const scopedKey = buildScopedTokenKey(provider, normalizedConfigId);
+    return tokens[scopedKey] || tokens[provider] || "";
+  }
+
+  return tokens[provider] || "";
+}
+
+export function writeToken(provider, token, configId = "", storage = localStorage) {
   const tokens = readProviderTokens(storage);
   const value = String(token || "").trim();
+  const normalizedConfigId = String(configId || "").trim();
+  const tokenKey = normalizedConfigId ? buildScopedTokenKey(provider, normalizedConfigId) : provider;
 
   if (value) {
-    tokens[provider] = value;
+    tokens[tokenKey] = value;
   } else {
-    delete tokens[provider];
+    delete tokens[tokenKey];
   }
 
   storage.setItem(STORAGE_KEYS.providerTokens, JSON.stringify(tokens));
 }
 
-export function clearToken(provider, storage = localStorage) {
+export function clearToken(provider, configId = "", storage = localStorage) {
   const tokens = readProviderTokens(storage);
-  delete tokens[provider];
+  const normalizedConfigId = String(configId || "").trim();
+  const tokenKey = normalizedConfigId ? buildScopedTokenKey(provider, normalizedConfigId) : provider;
+  delete tokens[tokenKey];
   storage.setItem(STORAGE_KEYS.providerTokens, JSON.stringify(tokens));
 }
 

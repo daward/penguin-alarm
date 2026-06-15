@@ -31,7 +31,7 @@ test("queue ranking prioritizes requested reviews over passive items", () => {
   assert.equal(items[1].created_at, passive.created_at);
 });
 
-test("stats return medians and rates from pull lifecycle data", () => {
+test("stats return medians, averages, and rates from pull lifecycle data", () => {
   const merged = [
     makePull({
       reviews: [{ state: "APPROVED", submitted_at: "2026-06-01T06:00:00Z", user: { login: "lea" } }]
@@ -50,8 +50,37 @@ test("stats return medians and rates from pull lifecycle data", () => {
   assert.equal(stats.mergedPulls, 2);
   assert.equal(stats.commentRate, 0.33);
   assert.equal(stats.medianTimeToFirstReview, 5);
+  assert.equal(stats.averageTimeToFirstReview, 5);
   assert.equal(stats.medianTimeToApproval, 6);
+  assert.equal(stats.averageTimeToApproval, 6);
   assert.equal(stats.medianTimeToMerge, 42);
+  assert.equal(stats.averageTimeToMerge, 42);
+});
+
+test("average time stats differ from median when data is skewed", () => {
+  const merged = [
+    makePull({
+      created_at: "2026-06-01T00:00:00Z",
+      merged_at: "2026-06-01T02:00:00Z",
+      reviews: [{ state: "COMMENTED", submitted_at: "2026-06-01T02:00:00Z", user: { login: "lea" } }]
+    }),
+    makePull({
+      created_at: "2026-06-02T00:00:00Z",
+      merged_at: "2026-06-02T04:00:00Z",
+      reviews: [{ state: "APPROVED", submitted_at: "2026-06-02T04:00:00Z", user: { login: "ben" } }]
+    }),
+    makePull({
+      created_at: "2026-06-03T00:00:00Z",
+      merged_at: "2026-06-03T20:00:00Z",
+      reviews: [{ state: "APPROVED", submitted_at: "2026-06-03T20:00:00Z", user: { login: "mo" } }]
+    })
+  ];
+
+  const stats = computeStats(merged, []);
+  assert.equal(stats.medianTimeToFirstReview, 4);
+  assert.equal(stats.averageTimeToFirstReview, 8.67);
+  assert.equal(stats.medianTimeToMerge, 4);
+  assert.equal(stats.averageTimeToMerge, 8.67);
 });
 
 test("leaderboard combines approval and comment share", () => {

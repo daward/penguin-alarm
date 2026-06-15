@@ -18,6 +18,16 @@ function median(values) {
     : Number(sorted[midpoint].toFixed(2));
 }
 
+function average(values) {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+  if (!finiteValues.length) {
+    return 0;
+  }
+
+  const total = finiteValues.reduce((sum, value) => sum + value, 0);
+  return Number((total / finiteValues.length).toFixed(2));
+}
+
 function uniqueByUserAndState(reviews, state) {
   const seen = new Set();
   return reviews.filter((review) => {
@@ -124,8 +134,11 @@ export function computeStats(mergedPulls, openPulls) {
     commentRate: Number((totalComments / Math.max(1, merged + open)).toFixed(2)),
     mergeRate: Number((merged / Math.max(1, merged + open)).toFixed(2)),
     medianTimeToFirstReview: median(firstReviewTimes),
+    averageTimeToFirstReview: average(firstReviewTimes),
     medianTimeToApproval: median(firstApprovalTimes),
-    medianTimeToMerge: median(mergeTimes)
+    averageTimeToApproval: average(firstApprovalTimes),
+    medianTimeToMerge: median(mergeTimes),
+    averageTimeToMerge: average(mergeTimes)
   };
 }
 
