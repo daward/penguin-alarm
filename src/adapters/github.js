@@ -1,4 +1,6 @@
 const PUBLIC_API_ROOT = "https://api.github.com";
+const viewerCache = new Map();
+const detailCache = new Map();
 
 function normalizeRepoTarget(value) {
   const input = String(value || "").trim();
@@ -136,8 +138,61 @@ async function fetchViewer(token, config) {
   const target = normalizeRepoTarget(config?.repos?.[0] || "owner/repo");
   const apiRoot = buildApiRoot(target.host);
   const useApiVersionHeader = apiRoot === PUBLIC_API_ROOT;
+  const cacheKey = `${apiRoot}|${token}`;
+  const cached = viewerCache.get(cacheKey);
+
+  if (cached) {
+    return cached;
+  }
+
   const { data, rateLimit } = await requestJson(`${apiRoot}/user`, token, useApiVersionHeader);
-  return { profile: data, rateLimit };
+  const result = { profile: data, rateLimit };
+  viewerCache.set(cacheKey, result);
+  return result;
+}
+
+function buildDetailCacheKey(apiRoot, repoName, pullNumber) {
+  return `${apiRoot}|${repoName}|${pullNumber}`;
+}
+
+function buildDetailCacheMarker(pull) {
+  return [pull.updated_at, pull.state, pull.merged_at, pull.draft].join("|");
+}
+
+async function fetchPullDetails(apiRoot, repoName, pull, token, useApiVersionHeader) {
+  const cacheKey = buildDetailCacheKey(apiRoot, repoName, pull.number);
+  const marker = buildDetailCacheMarker(pull);
+  const cached = detailCache.get(cacheKey);
+
+  if (cached?.marker === marker) {
+    return cached.value;
+  }
+
+  const [reviews, comments, issueComments] = await Promise.all([
+    paginate(`${apiRoot}/repos/${repoName}/pulls/${pull.number}/reviews?per_page=50`, token, 2, useApiVersionHeader),
+    paginate(`${apiRoot}/repos/${repoName}/pulls/${pull.number}/comments?per_page=50`, token, 2, useApiVersionHeader),
+    paginate(`${apiRoot}/repos/${repoName}/issues/${pull.number}/comments?per_page=50`, token, 2, useApiVersionHeader)
+  ]);
+
+  const value = {
+    reviews: reviews.items,
+    reviewComments: comments.items,
+    issueComments: issueComments.items
+  };
+
+  detailCache.set(cacheKey, { marker, value });
+  return value;
+}
+
+function normalizePullSummary(repoName, pull) {
+  return {
+    ...pull,
+    repoName,
+    reviews: [],
+    reviewComments: [],
+    issueComments: [],
+    hasDetailData: false
+  };
 }
 
 async function fetchRepoSnapshot(repoName, token, daysBack) {
@@ -151,32 +206,31 @@ async function fetchRepoSnapshot(repoName, token, daysBack) {
 
   const mergedSince = Date.now() - daysBack * 24 * 60 * 60 * 1000;
   const mergedPulls = closedPulls.items.filter((pull) => pull.merged_at && Date.parse(pull.merged_at) >= mergedSince);
-  const candidatePulls = [...openPulls.items, ...mergedPulls];
-
-  const detailResponses = await Promise.all(
-    candidatePulls.map(async (pull) => {
-      const [reviews, comments, issueComments] = await Promise.all([
-        paginate(`${apiRoot}/repos/${normalizedRepo}/pulls/${pull.number}/reviews?per_page=50`, token, 2, useApiVersionHeader),
-        paginate(`${apiRoot}/repos/${normalizedRepo}/pulls/${pull.number}/comments?per_page=50`, token, 2, useApiVersionHeader),
-        paginate(`${apiRoot}/repos/${normalizedRepo}/issues/${pull.number}/comments?per_page=50`, token, 2, useApiVersionHeader)
-      ]);
+  const detailedOpenPulls = await Promise.all(
+    openPulls.items.map(async (pull) => {
+      const details = await fetchPullDetails(apiRoot, normalizedRepo, pull, token, useApiVersionHeader);
 
       return {
         ...pull,
         repoName: normalizedRepo,
-        reviews: reviews.items,
-        reviewComments: comments.items,
-        issueComments: issueComments.items
+        hasDetailData: true,
+        ...details
       };
     })
   );
+  const summarizedMergedPulls = mergedPulls.map((pull) => normalizePullSummary(normalizedRepo, pull));
 
   return {
     repo: normalizedRepo,
-    openPulls: detailResponses.filter((pull) => pull.state === "open"),
-    mergedPulls: detailResponses.filter((pull) => pull.merged_at),
+    openPulls: detailedOpenPulls,
+    mergedPulls: summarizedMergedPulls,
     rateLimit: closedPulls.rateLimit || openPulls.rateLimit
   };
+}
+
+export function __resetGithubAdapterCache() {
+  viewerCache.clear();
+  detailCache.clear();
 }
 
 export const githubAdapter = {

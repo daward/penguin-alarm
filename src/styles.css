@@ -1,16 +1,16 @@
 :root {
   color-scheme: dark;
   --bg: #08111f;
-  --panel: rgba(12, 26, 48, 0.88);
+  --panel: rgba(12, 26, 48, 0.40);
   --panel-alt: rgba(20, 39, 67, 0.84);
   --border: rgba(132, 164, 214, 0.16);
   --text: #eef4ff;
   --muted: #a8b4cb;
-  --accent: #58d0ff;
+  --accent: #0096da;
   --accent-strong: #f6c453;
   --danger: #ff7b7b;
-  --shadow: 0 24px 64px rgba(3, 9, 18, 0.4);
-  --radius: 24px;
+  --shadow: 0 24px 64px rgba(3, 9, 18, 0.1);
+  --radius: 20px;
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
 }
 
@@ -22,7 +22,7 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top, rgba(128, 219, 255, 0.22), transparent 34%),
+    radial-gradient(circle at top, rgba(128, 219, 255, 0.22), transparent 54%),
     linear-gradient(180deg, #1a4c8a 0%, #10284a 46%, #0d1b31 100%);
   color: var(--text);
 }
@@ -42,11 +42,12 @@ button,
 
 button {
   border: 0;
-  background: linear-gradient(135deg, var(--accent), #2f87ff);
-  color: #07111e;
+  background: var(--accent);
+  color: var(--text);
   padding: 0.8rem 1.1rem;
   font-weight: 700;
   cursor: pointer;
+  border-radius: 10px;
 }
 
 button.ghost {
@@ -68,7 +69,7 @@ select,
 textarea {
   width: 100%;
   border: 1px solid var(--border);
-  background: rgba(5, 15, 30, 0.65);
+  background: rgba(5, 15, 30, 0.30);
   color: var(--text);
   border-radius: 16px;
   padding: 0.85rem 1rem;
@@ -94,10 +95,14 @@ a:hover {
 }
 
 .hero,
-.panel,
 .banner {
   backdrop-filter: blur(18px);
   box-shadow: var(--shadow);
+}
+
+.panel {
+  backdrop-filter: blur(18px);
+  box-shadow: none;
 }
 
 .hero {
@@ -198,8 +203,8 @@ h2 {
 
 .badge,
 .pill {
-  padding: 0.45rem 0.8rem;
-  background: rgba(255, 255, 255, 0.08);
+  padding: 0.3rem 0.8rem;
+  background: rgba(255, 255, 255, 0.1);
   border: 1px solid var(--border);
   color: var(--text);
   white-space: nowrap;
@@ -224,7 +229,7 @@ h2 {
 .layout-top,
 .layout-main {
   display: grid;
-  gap: 22px;
+  gap: 28px;
   margin-top: 16px;
 }
 
@@ -238,7 +243,7 @@ h2 {
 }
 
 .panel {
-  --panel-pad: 20px;
+  --panel-pad: 18px;
   border: 1px solid var(--border);
   background: var(--panel);
   border-radius: var(--radius);
@@ -251,13 +256,14 @@ h2 {
   margin: calc(var(--panel-pad) * -1) calc(var(--panel-pad) * -1) 14px;
   padding: 10px var(--panel-pad);
   border-radius: 0;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(15, 31, 54, 0.5);
   border-bottom: 1px solid var(--border);
+  min-height: 55px;
 }
 
 .stack {
   display: grid;
-  gap: 14px;
+  gap: 20px;
 }
 
 label span,
@@ -290,15 +296,13 @@ label span {
 .stats-list,
 .card-list {
   display: grid;
-  gap: 12px;
+  gap: 24px;
 }
 
 .stats-list {
   gap: 0;
-  border: 1px solid var(--border);
   border-radius: 16px;
   overflow: hidden;
-  background: rgba(11, 27, 50, 0.78);
 }
 
 .stat-row {
@@ -328,20 +332,26 @@ label span {
 }
 
 .card {
-  background: linear-gradient(180deg, rgba(18, 39, 68, 0.9), rgba(11, 25, 45, 0.92));
-  border: 1px solid var(--border);
-  border-radius: 22px;
-  padding: 14px;
+  background: transparent;
+  border-top: 0;
+  border-right: 0px solid rgba(132, 164, 214, 0.18);
+  border-bottom: 0;
+  border-left: 5px solid rgba(132, 164, 214, 0.28);
+  border-radius: 0;
+  padding-left: 15px;
+  border-image: linear-gradient(to bottom, rgba(40, 93, 137, 0.8), rgba(0, 0, 0, 0)) 0.5;
+  margin-bottom: 20px;
 }
 
 .compact-card {
-  padding: 12px;
+  padding: 5px 18px;
+  margin-bottom: 0px;
 }
 
 .card img {
   width: 52px;
   height: 52px;
-  border-radius: 18px;
+  border-radius: 20px;
   object-fit: cover;
   border: 1px solid var(--border);
 }
@@ -370,7 +380,7 @@ label span {
 .meta-row,
 .rating-row {
   flex-wrap: wrap;
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 .meta-row {

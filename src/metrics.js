@@ -45,6 +45,10 @@ function uniqueByUserAndState(reviews, state) {
   });
 }
 
+function hasDetailData(pull) {
+  return pull.hasDetailData !== false;
+}
+
 export function computeQueueScore(pull, viewerLogin) {
   let score = 0;
 
@@ -112,18 +116,20 @@ export function buildMergedItems(mergedPulls) {
 export function computeStats(mergedPulls, openPulls) {
   const merged = mergedPulls.length;
   const open = openPulls.length;
-  const firstReviewTimes = mergedPulls.map((pull) => {
+  const mergedWithDetails = mergedPulls.filter(hasDetailData);
+  const pullsWithDetails = [...mergedPulls, ...openPulls].filter(hasDetailData);
+  const firstReviewTimes = mergedWithDetails.map((pull) => {
     const firstReview = [...pull.reviews].sort((left, right) => Date.parse(left.submitted_at) - Date.parse(right.submitted_at))[0];
     return hoursBetween(pull.created_at, firstReview?.submitted_at);
   });
-  const firstApprovalTimes = mergedPulls.map((pull) => {
+  const firstApprovalTimes = mergedWithDetails.map((pull) => {
     const firstApproval = [...pull.reviews]
       .filter((review) => review.state === "APPROVED")
       .sort((left, right) => Date.parse(left.submitted_at) - Date.parse(right.submitted_at))[0];
     return hoursBetween(pull.created_at, firstApproval?.submitted_at);
   });
   const mergeTimes = mergedPulls.map((pull) => hoursBetween(pull.created_at, pull.merged_at));
-  const totalComments = [...mergedPulls, ...openPulls].reduce(
+  const totalComments = pullsWithDetails.reduce(
     (sum, pull) => sum + pull.reviewComments.length + pull.issueComments.length,
     0
   );
@@ -131,7 +137,7 @@ export function computeStats(mergedPulls, openPulls) {
   return {
     openPulls: open,
     mergedPulls: merged,
-    commentRate: Number((totalComments / Math.max(1, merged + open)).toFixed(2)),
+    commentRate: Number((totalComments / Math.max(1, pullsWithDetails.length)).toFixed(2)),
     mergeRate: Number((merged / Math.max(1, merged + open)).toFixed(2)),
     medianTimeToFirstReview: median(firstReviewTimes),
     averageTimeToFirstReview: average(firstReviewTimes),

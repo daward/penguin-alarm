@@ -615,6 +615,9 @@ export default function App() {
           <h1>Penguin Alarm</h1>
         </div>
         <div className="hero-status">
+          
+          <span>{config.repos.length} repos</span> | 
+          <span >{lastUpdatedAt ? `Updated ${formatDate(lastUpdatedAt)}` : "Not loaded yet"}</span>
           <label className="header-config-switcher" aria-label="Switch monitor configuration">
             <select value={config.id || ""} onChange={handleSelectConfig} disabled={!headerConfigOptions.length}>
               {headerConfigOptions.map((savedConfig) => (
@@ -624,8 +627,6 @@ export default function App() {
               ))}
             </select>
           </label>
-          <span className="badge">{config.repos.length} repos</span>
-          <span className="badge">{lastUpdatedAt ? `Updated ${formatDate(lastUpdatedAt)}` : "Not loaded yet"}</span>
           <button
             type="button"
             className="setup-toggle"

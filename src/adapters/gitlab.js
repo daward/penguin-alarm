@@ -1,3 +1,6 @@
+const viewerCache = new Map();
+const detailCache = new Map();
+
 function parseRepoTarget(value) {
   const input = String(value || "").trim();
   if (!input) {
@@ -144,11 +147,35 @@ function normalizeMergeRequest(mergeRequest, repoLabel, detail) {
       ? "blocked"
       : "clean",
     repoName: repoLabel,
+    hasDetailData: true,
     user: toUser(mergeRequest.author),
     requested_reviewers: (mergeRequest.reviewers || []).map(toUser),
     reviews: approvalReviews,
     reviewComments: diffComments,
     issueComments: noteComments
+  };
+}
+
+function normalizeMergeRequestSummary(mergeRequest, repoLabel) {
+  return {
+    id: mergeRequest.id,
+    number: mergeRequest.iid,
+    title: mergeRequest.title,
+    html_url: mergeRequest.web_url,
+    state: mergeRequest.state === "opened" ? "open" : "closed",
+    draft: Boolean(mergeRequest.draft || mergeRequest.work_in_progress),
+    created_at: mergeRequest.created_at,
+    merged_at: mergeRequest.merged_at,
+    mergeable_state: /cannot_be_merged|broken_status/i.test(mergeRequest.detailed_merge_status || "")
+      ? "blocked"
+      : "clean",
+    repoName: repoLabel,
+    hasDetailData: false,
+    user: toUser(mergeRequest.author),
+    requested_reviewers: (mergeRequest.reviewers || []).map(toUser),
+    reviews: [],
+    reviewComments: [],
+    issueComments: []
   };
 }
 
@@ -173,8 +200,15 @@ export async function fetchViewer(token, config) {
   const repo = config?.repos?.[0] || "gitlab.com/gitlab-org/gitlab";
   const target = parseRepoTarget(repo);
   const apiRoot = `https://${target.host}/api/v4`;
+  const cacheKey = `${apiRoot}|${token}`;
+  const cached = viewerCache.get(cacheKey);
+
+  if (cached) {
+    return cached;
+  }
+
   const { data, rateLimit } = await requestJson(`${apiRoot}/user`, token);
-  return {
+  const result = {
     profile: {
       login: data.username,
       username: data.username,
@@ -183,6 +217,38 @@ export async function fetchViewer(token, config) {
     },
     rateLimit
   };
+
+  viewerCache.set(cacheKey, result);
+  return result;
+}
+
+function buildDetailCacheKey(apiRoot, projectPath, mergeRequestIid) {
+  return `${apiRoot}|${projectPath}|${mergeRequestIid}`;
+}
+
+function buildDetailCacheMarker(mergeRequest) {
+  return [
+    mergeRequest.updated_at,
+    mergeRequest.state,
+    mergeRequest.merged_at,
+    mergeRequest.draft,
+    mergeRequest.work_in_progress,
+    mergeRequest.detailed_merge_status
+  ].join("|");
+}
+
+async function fetchCachedMergeRequestDetails(apiRoot, projectPath, mergeRequest, token) {
+  const cacheKey = buildDetailCacheKey(apiRoot, projectPath, mergeRequest.iid);
+  const marker = buildDetailCacheMarker(mergeRequest);
+  const cached = detailCache.get(cacheKey);
+
+  if (cached?.marker === marker) {
+    return cached.value;
+  }
+
+  const value = await fetchMergeRequestDetails(apiRoot, projectPath, mergeRequest.iid, token);
+  detailCache.set(cacheKey, { marker, value });
+  return value;
 }
 
 export async function fetchRepoSnapshot(repoName, token, daysBack) {
@@ -200,20 +266,25 @@ export async function fetchRepoSnapshot(repoName, token, daysBack) {
     (mergeRequest) => mergeRequest.merged_at && Date.parse(mergeRequest.merged_at) >= mergedSince
   );
 
-  const candidateMergeRequests = [...openMergeRequests.items, ...mergedRecent];
-  const detailed = await Promise.all(
-    candidateMergeRequests.map(async (mergeRequest) => {
-      const detail = await fetchMergeRequestDetails(apiRoot, target.projectPath, mergeRequest.iid, token);
+  const detailedOpenPulls = await Promise.all(
+    openMergeRequests.items.map(async (mergeRequest) => {
+      const detail = await fetchCachedMergeRequestDetails(apiRoot, target.projectPath, mergeRequest, token);
       return normalizeMergeRequest(mergeRequest, target.label, detail);
     })
   );
+  const summarizedMergedPulls = mergedRecent.map((mergeRequest) => normalizeMergeRequestSummary(mergeRequest, target.label));
 
   return {
     repo: target.label,
-    openPulls: detailed.filter((item) => item.state === "open"),
-    mergedPulls: detailed.filter((item) => item.merged_at),
+    openPulls: detailedOpenPulls,
+    mergedPulls: summarizedMergedPulls,
     rateLimit: mergedMergeRequests.rateLimit || openMergeRequests.rateLimit
   };
+}
+
+export function __resetGitlabAdapterCache() {
+  viewerCache.clear();
+  detailCache.clear();
 }
 
 export const gitlabAdapter = {

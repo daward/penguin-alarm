@@ -100,3 +100,29 @@ test("leaderboard combines approval and comment share", () => {
   assert.equal(board[0].score, 1.167);
   assert.equal(board[1].login, "mo");
 });
+
+test("stats ignore missing merged detail for review and comment metrics", () => {
+  const merged = [
+    makePull({
+      hasDetailData: false,
+      reviewComments: [{ user: { login: "hidden" } }],
+      reviews: [{ state: "APPROVED", submitted_at: "2026-06-01T06:00:00Z", user: { login: "hidden" } }]
+    }),
+    makePull({
+      created_at: "2026-06-03T00:00:00Z",
+      merged_at: "2026-06-05T00:00:00Z",
+      hasDetailData: true,
+      reviews: [{ state: "COMMENTED", submitted_at: "2026-06-03T04:00:00Z", user: { login: "ben" } }],
+      reviewComments: [{ user: { login: "ben" } }]
+    })
+  ];
+  const open = [makePull({ merged_at: null, hasDetailData: true })];
+
+  const stats = computeStats(merged, open);
+  assert.equal(stats.commentRate, 0.5);
+  assert.equal(stats.medianTimeToFirstReview, 4);
+  assert.equal(stats.averageTimeToFirstReview, 4);
+  assert.equal(stats.medianTimeToApproval, 0);
+  assert.equal(stats.averageTimeToApproval, 0);
+  assert.equal(stats.medianTimeToMerge, 42);
+});
