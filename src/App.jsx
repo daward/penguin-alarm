@@ -632,7 +632,7 @@ function ActivityChart({ data }) {
   const bottomPad = 42;
   const innerWidth = width - leftPad - rightPad;
   const innerHeight = height - topPad - bottomPad;
-  const maxValue = Math.max(1, ...data.flatMap((item) => [item.approvals, item.comments, item.merges]));
+  const maxValue = Math.max(1, ...data.map((item) => item.approvals + item.comments + item.merges));
   const tickCount = Math.min(5, maxValue + 1);
   const yTicks = Array.from({ length: tickCount }, (_, index) => {
     const divisor = tickCount - 1 || 1;
