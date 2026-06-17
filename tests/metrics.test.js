@@ -173,6 +173,25 @@ test("leaderboard combines approval and comment share", () => {
   assert.equal(board[1].login, "mo");
 });
 
+test("leaderboard excludes configured bot users", () => {
+  const pulls = [
+    makePull({
+      reviews: [
+        { state: "APPROVED", user: { login: "lea", avatar_url: "a" } },
+        { state: "APPROVED", user: { login: "devops-org-admin", avatar_url: "bot" } }
+      ],
+      reviewComments: [{ user: { login: "devops-org-admin", avatar_url: "bot" } }],
+      issueComments: [{ user: { login: "lea", avatar_url: "a" } }]
+    })
+  ];
+
+  const board = computeLeaderboard(pulls, ["devops-org-admin"]);
+  assert.equal(board.length, 1);
+  assert.equal(board[0].login, "lea");
+  assert.equal(board[0].approvals, 1);
+  assert.equal(board[0].comments, 1);
+});
+
 test("stats ignore missing merged detail for review and comment metrics", () => {
   const merged = [
     makePull({
@@ -234,6 +253,26 @@ test("first review timing uses earliest review activity, not only approvals", ()
 
   const stats = computeStats(merged, []);
   assert.equal(stats.medianTimeToFirstReview, 2);
+  assert.equal(stats.medianTimeToApproval, 6);
+});
+
+test("stats exclude configured bot review activity", () => {
+  const merged = [
+    makePull({
+      hasReviewData: true,
+      hasCommentData: true,
+      reviews: [
+        { state: "APPROVED", submitted_at: "2026-06-01T06:00:00Z", user: { login: "lea" } },
+        { state: "COMMENTED", submitted_at: "2026-06-01T01:00:00Z", user: { login: "devops-org-admin" } }
+      ],
+      reviewComments: [{ created_at: "2026-06-01T02:00:00Z", user: { login: "devops-org-admin" } }],
+      issueComments: [{ created_at: "2026-06-01T03:00:00Z", user: { login: "lea" } }]
+    })
+  ];
+
+  const stats = computeStats(merged, [], { botUsers: ["devops-org-admin"] });
+  assert.equal(stats.commentRate, 1);
+  assert.equal(stats.medianTimeToFirstReview, 3);
   assert.equal(stats.medianTimeToApproval, 6);
 });
 

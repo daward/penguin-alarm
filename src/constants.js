@@ -11,6 +11,7 @@ export const DEFAULT_CONFIG = {
   provider: "github",
   repos: [],
   teamMembers: [],
+  botUsers: [],
   repoGroups: [],
   timeWindowDays: 14,
   queueFilter: "all",

@@ -670,6 +670,7 @@ export default function App() {
       const openPulls = snapshots.flatMap((snapshot) => snapshot.openPulls);
       const mergedPulls = snapshots.flatMap((snapshot) => snapshot.mergedPulls);
       const teamMembers = config.teamMembers || [];
+      const botUsers = config.botUsers || [];
       const scopedOpenPulls = filterPullsByTeam(openPulls, teamMembers);
       const scopedMergedPulls = filterPullsByTeam(mergedPulls, teamMembers);
 
@@ -680,8 +681,13 @@ export default function App() {
         setMergedItems(buildMergedItems(scopedMergedPulls));
         setStatsOpenPulls(scopedOpenPulls);
         setStatsMergedPulls(scopedMergedPulls);
-        setStats(computeStats(scopedMergedPulls, scopedOpenPulls, { includeOpenInReviewStats: includeOpenInStats }));
-        setLeaderboard(computeLeaderboard([...scopedOpenPulls, ...scopedMergedPulls]));
+        setStats(
+          computeStats(scopedMergedPulls, scopedOpenPulls, {
+            includeOpenInReviewStats: includeOpenInStats,
+            botUsers
+          })
+        );
+        setLeaderboard(computeLeaderboard([...scopedOpenPulls, ...scopedMergedPulls], botUsers));
         setLastUpdatedAt(new Date().toISOString());
         if (failures.length) {
           setError(`Loaded ${snapshots.length}/${config.repos.length} repos. Some ${adapter.label} requests failed.`);
@@ -713,8 +719,13 @@ export default function App() {
       return;
     }
 
-    setStats(computeStats(statsMergedPulls, statsOpenPulls, { includeOpenInReviewStats: includeOpenInStats }));
-  }, [includeOpenInStats, statsMergedPulls, statsOpenPulls]);
+    setStats(
+      computeStats(statsMergedPulls, statsOpenPulls, {
+        includeOpenInReviewStats: includeOpenInStats,
+        botUsers: config.botUsers || []
+      })
+    );
+  }, [config.botUsers, includeOpenInStats, statsMergedPulls, statsOpenPulls]);
 
   function handleSaveToken(event) {
     event.preventDefault();
@@ -947,6 +958,16 @@ export default function App() {
                 placeholder="alice\nbob\ncarol"
               />
               <span className="muted">Only PRs opened by these usernames will show up in the dashboard.</span>
+            </label>
+            <label>
+              <span>Bot users</span>
+              <textarea
+                name="botUsers"
+                rows="3"
+                defaultValue={(config.botUsers || []).join("\n")}
+                placeholder="devops-org-admin\nrenovate[bot]"
+              />
+              <span className="muted">These usernames are excluded from review timing stats and the leaderboard.</span>
             </label>
             <label>
               <span>Repo groups</span>

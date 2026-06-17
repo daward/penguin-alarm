@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { clearToken, readToken, writeToken } from "../src/storage.js";
+import { clearToken, normalizeConfig, readToken, writeToken } from "../src/storage.js";
 
 function createStorage(seed = {}) {
   const values = { ...seed };
@@ -46,4 +46,16 @@ test("clearToken removes only the targeted scoped token", () => {
 
   assert.equal(readToken("gitlab", "cfg_a", storage), "");
   assert.equal(readToken("gitlab", "cfg_b", storage), "token-b");
+});
+
+test("normalizeConfig parses bot users alongside team members", () => {
+  const config = normalizeConfig({
+    name: "Example",
+    repos: "acme/api",
+    teamMembers: "alice\nbob",
+    botUsers: "devops-org-admin\nrenovate[bot]"
+  });
+
+  assert.deepEqual(config.teamMembers, ["alice", "bob"]);
+  assert.deepEqual(config.botUsers, ["devops-org-admin", "renovate[bot]"]);
 });

@@ -73,6 +73,26 @@ function hasCommentData(pull) {
   return pull.hasCommentData !== false;
 }
 
+function normalizeLogin(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function createBotUserSet(botUsers = []) {
+  return new Set(botUsers.map(normalizeLogin).filter(Boolean));
+}
+
+function isBotUser(login, botUsers) {
+  return botUsers.has(normalizeLogin(login));
+}
+
+function filterReviews(reviews, botUsers) {
+  return reviews.filter((review) => !isBotUser(review.user?.login, botUsers));
+}
+
+function filterComments(comments, botUsers) {
+  return comments.filter((comment) => !isBotUser(comment.user?.login, botUsers));
+}
+
 function getFirstReviewActivityAt(pull) {
   const timestamps = [
     ...pull.reviews.map((review) => review.submitted_at),
@@ -171,24 +191,30 @@ export function buildMergedItems(mergedPulls) {
 }
 
 export function computeStats(mergedPulls, openPulls, options = {}) {
-  const { includeOpenInReviewStats = false } = options;
+  const { includeOpenInReviewStats = false, botUsers = [] } = options;
+  const botUserSet = createBotUserSet(botUsers);
   const merged = mergedPulls.length;
   const open = openPulls.length;
   const reviewStatsPulls = includeOpenInReviewStats ? [...mergedPulls, ...openPulls] : mergedPulls;
   const reviewStatsWithDetails = reviewStatsPulls.filter(hasReviewData);
   const pullsWithCommentDetails = [...mergedPulls, ...openPulls].filter(hasCommentData);
   const firstReviewTimes = reviewStatsWithDetails.map((pull) => {
-    return hoursBetween(pull.created_at, getFirstReviewActivityAt(pull));
+    return hoursBetween(pull.created_at, getFirstReviewActivityAt({
+      ...pull,
+      reviews: filterReviews(pull.reviews, botUserSet),
+      reviewComments: filterComments(pull.reviewComments, botUserSet),
+      issueComments: filterComments(pull.issueComments, botUserSet)
+    }));
   });
   const firstApprovalTimes = reviewStatsWithDetails.map((pull) => {
-    const firstApproval = [...pull.reviews]
+    const firstApproval = filterReviews(pull.reviews, botUserSet)
       .filter((review) => review.state === "APPROVED")
       .sort((left, right) => Date.parse(left.submitted_at) - Date.parse(right.submitted_at))[0];
     return hoursBetween(pull.created_at, firstApproval?.submitted_at);
   });
   const mergeTimes = mergedPulls.map((pull) => hoursBetween(pull.created_at, pull.merged_at));
   const totalComments = pullsWithCommentDetails.reduce(
-    (sum, pull) => sum + pull.reviewComments.length + pull.issueComments.length,
+    (sum, pull) => sum + filterComments(pull.reviewComments, botUserSet).length + filterComments(pull.issueComments, botUserSet).length,
     0
   );
 
@@ -206,12 +232,13 @@ export function computeStats(mergedPulls, openPulls, options = {}) {
   };
 }
 
-export function computeLeaderboard(allPulls) {
+export function computeLeaderboard(allPulls, botUsers = []) {
+  const botUserSet = createBotUserSet(botUsers);
   const totals = { approvals: 0, comments: 0 };
   const perUser = new Map();
 
   for (const pull of allPulls) {
-    for (const review of uniqueByUserAndState(pull.reviews, "APPROVED")) {
+    for (const review of uniqueByUserAndState(filterReviews(pull.reviews, botUserSet), "APPROVED")) {
       const login = review.user?.login;
       if (!login) {
         continue;
@@ -223,7 +250,7 @@ export function computeLeaderboard(allPulls) {
       perUser.set(login, current);
     }
 
-    const comments = [...pull.reviewComments, ...pull.issueComments];
+    const comments = [...filterComments(pull.reviewComments, botUserSet), ...filterComments(pull.issueComments, botUserSet)];
     for (const comment of comments) {
       const login = comment.user?.login;
       if (!login) {
