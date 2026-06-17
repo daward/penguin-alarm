@@ -188,6 +188,18 @@ function getRepoInputGuidance(provider) {
   };
 }
 
+function getTokenGuidance(provider) {
+  if (provider === "gitlab") {
+    return "Use a personal access token with API access to the target projects.";
+  }
+
+  if (provider === "bitbucket") {
+    return "Use a personal access token with read access to pull requests and comments.";
+  }
+
+  return "For GitHub and GitHub Enterprise, use a fine-grained PAT with repository access to the selected repos and `Pull requests: Read`. For a classic PAT, use `repo` for private repos or `public_repo` for public-only repos.";
+}
+
 function getShareUrl(config) {
   const url = new URL(window.location.href);
   url.searchParams.set("config", exportConfig(config));
@@ -560,6 +572,7 @@ export default function App() {
   const adapter = getAdapter(config.provider);
   const tokenAdapter = getAdapter(tokenProvider);
   const repoInput = getRepoInputGuidance(config.provider);
+  const tokenGuidance = getTokenGuidance(tokenProvider);
 
   useEffect(() => {
     const activeToken = readToken(config.provider, config.id || "");
@@ -784,6 +797,7 @@ export default function App() {
             ) : null}
           </div>
           <p className="muted">Paste a token for this provider. Data stays in your browser storage.</p>
+          <p className="muted">{tokenGuidance}</p>
           <form className="stack" onSubmit={handleSaveToken}>
             <label>
               <span>Provider</span>
