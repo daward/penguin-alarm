@@ -2,7 +2,7 @@ import { startTransition, useEffect, useMemo, useState } from "react";
 
 import { PROVIDERS, DEFAULT_CONFIG, QUEUE_FILTERS, RATING_OPTIONS } from "./constants.js";
 import { getAdapter } from "./adapters/index.js";
-import { buildMergedItems, buildQueueItems, computeLeaderboard, computeStats } from "./metrics.js";
+import { buildMergedItems, buildQueueItems, computeDailyActivity, computeLeaderboard, computeStats } from "./metrics.js";
 import {
   createId,
   clearToken,
@@ -51,6 +51,31 @@ function formatDurationHours(value) {
   }
 
   return `${Number(value.toFixed(2))}h`;
+}
+
+function formatDayLabel(value) {
+  return new Date(`${value}T00:00:00Z`).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric"
+  });
+}
+
+function readCurrentPage() {
+  if (window.location.hash === "#activity") {
+    return "activity";
+  }
+
+  if (window.location.hash === "#config") {
+    return "config";
+  }
+
+  return "dashboard";
+}
+
+function writeCurrentPage(page) {
+  const nextHash = page === "activity" ? "#activity" : page === "config" ? "#config" : "";
+  const nextUrl = `${window.location.pathname}${window.location.search}${nextHash}`;
+  window.history.replaceState({}, "", nextUrl);
 }
 
 function getQueueScoreExplanation(pull) {
@@ -594,8 +619,140 @@ function OpsPanel() {
   );
 }
 
+function ActivityChart({ data }) {
+  if (!data.length) {
+    return <p className="muted">Load repos to see daily approvals, comments, and merges.</p>;
+  }
+
+  const height = 260;
+  const width = 860;
+  const leftPad = 52;
+  const rightPad = 20;
+  const topPad = 16;
+  const bottomPad = 42;
+  const innerWidth = width - leftPad - rightPad;
+  const innerHeight = height - topPad - bottomPad;
+  const maxValue = Math.max(1, ...data.flatMap((item) => [item.approvals, item.comments, item.merges]));
+  const tickCount = Math.min(5, maxValue + 1);
+  const yTicks = Array.from({ length: tickCount }, (_, index) => {
+    const divisor = tickCount - 1 || 1;
+    const value = Math.round((maxValue * (divisor - index)) / divisor);
+    return { value, y: topPad + (innerHeight * index) / divisor };
+  });
+  const series = [
+    { key: "merges", label: "Merges", color: "#58d0ff" },
+    { key: "approvals", label: "Approvals", color: "#7fe0a3" },
+    { key: "comments", label: "Comments", color: "#f6c453" }
+  ];
+  const columnWidth = innerWidth / Math.max(data.length, 1);
+  const barWidth = Math.min(18, Math.max(8, columnWidth * 0.45));
+  const labelStep = Math.max(1, Math.ceil(data.length / 6));
+  const xLabels = data
+    .map((item, index) => ({ ...item, index }))
+    .filter((item, index) => index === 0 || index === data.length - 1 || index % labelStep === 0);
+
+  function getGroupX(index) {
+    return leftPad + columnWidth * index + columnWidth / 2;
+  }
+
+  function getBarHeight(value) {
+    return (value / maxValue) * innerHeight;
+  }
+
+  return (
+    <div className="activity-chart">
+      <div className="activity-legend" aria-hidden="true">
+        {series.map((item) => (
+          <span className="activity-legend-item" key={item.key}>
+            <span className="activity-legend-swatch" style={{ background: item.color }} />
+            {item.label}
+          </span>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Daily approvals, comments, and merges">
+        {yTicks.map((tick) => (
+          <g key={`${tick.value}-${tick.y}`}>
+            <line className="activity-grid-line" x1={leftPad} y1={tick.y} x2={width - rightPad} y2={tick.y} />
+            <text className="activity-axis-label" x={leftPad - 10} y={tick.y + 4} textAnchor="end">
+              {tick.value}
+            </text>
+          </g>
+        ))}
+        {xLabels.map((item) => (
+          <text
+            className="activity-axis-label"
+            key={item.day}
+            x={getGroupX(item.index)}
+            y={height - 10}
+            textAnchor="middle"
+          >
+            {formatDayLabel(item.day)}
+          </text>
+        ))}
+        <line className="activity-grid-line" x1={leftPad} y1={topPad + innerHeight} x2={width - rightPad} y2={topPad + innerHeight} />
+        {data.flatMap((day, index) => {
+          const groupX = getGroupX(index);
+          const x = groupX - barWidth / 2;
+          let cumulativeHeight = 0;
+
+          return series.map((item) => {
+            const value = day[item.key];
+            const barHeight = getBarHeight(value);
+            const y = topPad + innerHeight - cumulativeHeight - barHeight;
+            cumulativeHeight += barHeight;
+
+            if (value === 0) {
+              return null;
+            }
+
+            return (
+              <rect
+                key={`${item.key}-${day.day}`}
+                x={x}
+                y={y}
+                width={barWidth}
+                height={barHeight}
+                rx="2"
+                fill={item.color}
+              >
+                <title>{`${formatDayLabel(day.day)}: ${item.label} ${value}`}</title>
+              </rect>
+            );
+          });
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function ActivityPanel({ activity }) {
+  const totals = activity.reduce(
+    (summary, day) => ({
+      approvals: summary.approvals + day.approvals,
+      comments: summary.comments + day.comments,
+      merges: summary.merges + day.merges
+    }),
+    { approvals: 0, comments: 0, merges: 0 }
+  );
+
+  return (
+    <section className="panel activity-panel">
+      <div className="panel-header">
+        <h2>Daily Activity</h2>
+        <div className="activity-totals">
+          <span className="badge">{totals.approvals} approvals</span>
+          <span className="badge">{totals.comments} comments</span>
+          <span className="badge">{totals.merges} merges</span>
+        </div>
+      </div>
+      <ActivityChart data={activity} />
+    </section>
+  );
+}
+
 export default function App() {
   const initialState = useMemo(() => useBootstrapState(), []);
+  const [page, setPage] = useState(() => readCurrentPage());
   const [token, setToken] = useState(initialState.token);
   const [tokenProvider, setTokenProvider] = useState(initialState.selectedConfig?.provider || "github");
   const [tokenDraft, setTokenDraft] = useState(initialState.token);
@@ -614,11 +771,9 @@ export default function App() {
   const [statsOpenPulls, setStatsOpenPulls] = useState([]);
   const [statsMergedPulls, setStatsMergedPulls] = useState([]);
   const [includeOpenInStats, setIncludeOpenInStats] = useState(false);
-  const [isSetupOpen, setIsSetupOpen] = useState(
-    () => !(initialState.token && initialState.selectedConfig?.repos?.length)
-  );
 
   const config = selectedConfig || DEFAULT_CONFIG;
+  const needsSetup = !(token && config?.repos.length);
   const headerConfigOptions = configs.some((item) => item.id === config.id)
     ? configs
     : config.id
@@ -629,6 +784,19 @@ export default function App() {
   const tokenAdapter = getAdapter(tokenProvider);
   const repoInput = getRepoInputGuidance(config.provider);
   const tokenGuidance = getTokenGuidance(tokenProvider);
+  const activity = useMemo(
+    () => computeDailyActivity(statsOpenPulls, statsMergedPulls, config.botUsers || [], config.timeWindowDays),
+    [config.botUsers, config.timeWindowDays, statsMergedPulls, statsOpenPulls]
+  );
+
+  useEffect(() => {
+    function handleHashChange() {
+      setPage(readCurrentPage());
+    }
+
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
 
   useEffect(() => {
     const activeToken = readToken(config.provider, config.id || "");
@@ -642,10 +810,11 @@ export default function App() {
   }, [tokenProvider, config.id]);
 
   useEffect(() => {
-    if (!token || !config?.repos.length) {
-      setIsSetupOpen(true);
+    if (needsSetup && page !== "config") {
+      setPage("config");
+      writeCurrentPage("config");
     }
-  }, [token, config.id, config.repos.length]);
+  }, [needsSetup, page]);
 
   async function loadDashboard() {
     if (!token || !config?.repos.length) {
@@ -737,11 +906,6 @@ export default function App() {
       setToken(trimmedToken);
     }
 
-    const activeConfigToken =
-      tokenProvider === config.provider ? trimmedToken : readToken(config.provider, config.id || "");
-    if (activeConfigToken && config.repos.length) {
-      setIsSetupOpen(false);
-    }
   }
 
   function handleClearToken() {
@@ -771,9 +935,6 @@ export default function App() {
     setToken(configToken);
     setTokenProvider(nextConfig.provider);
     setTokenDraft(configToken);
-    if (configToken && nextConfig.repos.length) {
-      setIsSetupOpen(false);
-    }
   }
 
   function handleSelectConfig(event) {
@@ -813,11 +974,39 @@ export default function App() {
     await navigator.clipboard.writeText(getShareUrl(selectedConfig));
   }
 
+  function handleNavigate(nextPage) {
+    setPage(nextPage);
+    writeCurrentPage(nextPage);
+  }
+
   return (
     <main className="shell">
       <header className="hero">
-        <div>
+        <div className="hero-brand">
           <h1>Penguin Alarm</h1>
+          <nav className="hero-view-switcher" aria-label="Primary">
+            <button
+              type="button"
+              className={page === "dashboard" ? "hero-view-link is-active" : "hero-view-link"}
+              onClick={() => handleNavigate("dashboard")}
+            >
+              Dashboard
+            </button>
+            <button
+              type="button"
+              className={page === "activity" ? "hero-view-link is-active" : "hero-view-link"}
+              onClick={() => handleNavigate("activity")}
+            >
+              Activity
+            </button>
+            <button
+              type="button"
+              className={page === "config" ? "hero-view-link is-active" : "hero-view-link"}
+              onClick={() => handleNavigate("config")}
+            >
+              Config
+            </button>
+          </nav>
         </div>
         <div className="hero-status">
           {isLoading ? (
@@ -837,24 +1026,12 @@ export default function App() {
               ))}
             </select>
           </label>
-          <button
-            type="button"
-            className="setup-toggle"
-            aria-label={isSetupOpen ? "Hide setup" : "Show setup"}
-            title={isSetupOpen ? "Hide setup" : "Show setup"}
-            onClick={() => setIsSetupOpen((value) => !value)}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M19.4 13a7.8 7.8 0 0 0 .1-1l2-1.6-2-3.4-2.4 1a7.8 7.8 0 0 0-1.7-1l-.4-2.5h-4l-.4 2.5a7.8 7.8 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.8 7.8 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.8 7.8 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.8 7.8 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6ZM12 15.4A3.4 3.4 0 1 1 12 8.6a3.4 3.4 0 0 1 0 6.8Z" />
-            </svg>
-            <span className="sr-only">{isSetupOpen ? "Hide setup" : "Show setup"}</span>
-          </button>
         </div>
       </header>
 
       {error ? <div className="banner error">{error}</div> : null}
 
-      {isSetupOpen ? (
+      {page === "config" ? (
         <section className="layout-top">
           <section className="panel">
           <div className="panel-header">
@@ -1023,23 +1200,27 @@ export default function App() {
           )}
           </section>
         </section>
-      ) : null}
-
-      <section className="layout-main">
-        <div className="stack">
-          <QueuePanel items={queueItems} token={token} />
-          <MergedPanel items={mergedItems} ratings={ratings} onRate={handleRate} token={token} />
-        </div>
-        <div className="stack">
-          <StatPanel
-            stats={stats}
-            includeOpenInStats={includeOpenInStats}
-            onToggleIncludeOpen={() => setIncludeOpenInStats((value) => !value)}
-          />
-          <LeaderboardPanel users={leaderboard} token={token} />
-        </div>
-        <OpsPanel />
-      </section>
+      ) : page === "dashboard" ? (
+        <section className="layout-main">
+          <div className="stack">
+            <QueuePanel items={queueItems} token={token} />
+            <MergedPanel items={mergedItems} ratings={ratings} onRate={handleRate} token={token} />
+          </div>
+          <div className="stack">
+            <StatPanel
+              stats={stats}
+              includeOpenInStats={includeOpenInStats}
+              onToggleIncludeOpen={() => setIncludeOpenInStats((value) => !value)}
+            />
+            <LeaderboardPanel users={leaderboard} token={token} />
+          </div>
+          <OpsPanel />
+        </section>
+      ) : (
+        <section className="layout-activity">
+          <ActivityPanel activity={activity} />
+        </section>
+      )}
     </main>
   );
 }

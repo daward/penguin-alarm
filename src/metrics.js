@@ -277,3 +277,110 @@ export function computeLeaderboard(allPulls, botUsers = []) {
     })
     .sort((left, right) => right.score - left.score);
 }
+
+function startOfUtcDay(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function formatUtcDayKey(value) {
+  const day = startOfUtcDay(value);
+  return day ? day.toISOString().slice(0, 10) : null;
+}
+
+function enumerateUtcDaysInRange(start, end) {
+  const days = [];
+
+  for (let current = new Date(start); current <= end; current.setUTCDate(current.getUTCDate() + 1)) {
+    days.push(current.toISOString().slice(0, 10));
+  }
+
+  return days;
+}
+
+export function computeDailyActivity(openPulls, mergedPulls, botUsers = [], daysBack = 14, now = new Date()) {
+  const botUserSet = createBotUserSet(botUsers);
+  const counters = new Map();
+  const safeDaysBack = Math.max(1, Number(daysBack) || 1);
+  const end = startOfUtcDay(now);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - (safeDaysBack - 1));
+  const rangeStartMs = start.getTime();
+  const rangeEndMs = end.getTime() + 24 * 60 * 60 * 1000;
+
+  function ensureDay(dayKey) {
+    if (!dayKey) {
+      return null;
+    }
+
+    if (!counters.has(dayKey)) {
+      counters.set(dayKey, {
+        day: dayKey,
+        approvals: 0,
+        comments: 0,
+        merges: 0
+      });
+    }
+
+    return counters.get(dayKey);
+  }
+
+  function isWithinRange(value) {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) && timestamp >= rangeStartMs && timestamp < rangeEndMs;
+  }
+
+  function addApprovalEvents(pulls) {
+    for (const pull of pulls) {
+      for (const review of filterReviews(pull.reviews, botUserSet)) {
+        if (review.state !== "APPROVED" || !isWithinRange(review.submitted_at)) {
+          continue;
+        }
+
+        const day = ensureDay(formatUtcDayKey(review.submitted_at));
+        if (day) {
+          day.approvals += 1;
+        }
+      }
+    }
+  }
+
+  function addCommentEvents(pulls) {
+    for (const pull of pulls) {
+      const comments = [...filterComments(pull.reviewComments, botUserSet), ...filterComments(pull.issueComments, botUserSet)];
+      for (const comment of comments) {
+        if (!isWithinRange(comment.created_at)) {
+          continue;
+        }
+
+        const day = ensureDay(formatUtcDayKey(comment.created_at));
+        if (day) {
+          day.comments += 1;
+        }
+      }
+    }
+  }
+
+  addApprovalEvents(openPulls);
+  addApprovalEvents(mergedPulls);
+  addCommentEvents(openPulls);
+  addCommentEvents(mergedPulls);
+
+  for (const pull of mergedPulls) {
+    if (!isWithinRange(pull.merged_at)) {
+      continue;
+    }
+
+    const day = ensureDay(formatUtcDayKey(pull.merged_at));
+    if (day) {
+      day.merges += 1;
+    }
+  }
+
+  const allDayKeys = enumerateUtcDaysInRange(start, end);
+  return allDayKeys.map((dayKey) => counters.get(dayKey) || { day: dayKey, approvals: 0, comments: 0, merges: 0 });
+}
