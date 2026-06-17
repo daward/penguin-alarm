@@ -176,19 +176,21 @@ test("leaderboard combines approval and comment share", () => {
 test("stats ignore missing merged detail for review and comment metrics", () => {
   const merged = [
     makePull({
-      hasDetailData: false,
+      hasReviewData: false,
+      hasCommentData: false,
       reviewComments: [{ user: { login: "hidden" } }],
       reviews: [{ state: "APPROVED", submitted_at: "2026-06-01T06:00:00Z", user: { login: "hidden" } }]
     }),
     makePull({
       created_at: "2026-06-03T00:00:00Z",
       merged_at: "2026-06-05T00:00:00Z",
-      hasDetailData: true,
+      hasReviewData: true,
+      hasCommentData: true,
       reviews: [{ state: "COMMENTED", submitted_at: "2026-06-03T04:00:00Z", user: { login: "ben" } }],
       reviewComments: [{ user: { login: "ben" } }]
     })
   ];
-  const open = [makePull({ merged_at: null, hasDetailData: true })];
+  const open = [makePull({ merged_at: null, hasReviewData: true, hasCommentData: true })];
 
   const stats = computeStats(merged, open);
   assert.equal(stats.commentRate, 0.5);
@@ -197,6 +199,42 @@ test("stats ignore missing merged detail for review and comment metrics", () => 
   assert.equal(stats.medianTimeToApproval, 0);
   assert.equal(stats.averageTimeToApproval, 0);
   assert.equal(stats.medianTimeToMerge, 42);
+});
+
+test("merged-only approval timing uses merged pulls with review data only", () => {
+  const merged = [
+    makePull({
+      hasReviewData: true,
+      hasCommentData: false,
+      reviews: [{ state: "APPROVED", submitted_at: "2026-06-01T06:00:00Z", user: { login: "lea" } }]
+    }),
+    makePull({
+      created_at: "2026-06-03T00:00:00Z",
+      merged_at: "2026-06-05T00:00:00Z",
+      hasReviewData: true,
+      hasCommentData: false,
+      reviews: [{ state: "APPROVED", submitted_at: "2026-06-03T12:00:00Z", user: { login: "ben" } }]
+    })
+  ];
+
+  const stats = computeStats(merged, []);
+  assert.equal(stats.medianTimeToApproval, 9);
+  assert.equal(stats.averageTimeToApproval, 9);
+});
+
+test("first review timing uses earliest review activity, not only approvals", () => {
+  const merged = [
+    makePull({
+      hasReviewData: true,
+      hasCommentData: true,
+      reviews: [{ state: "APPROVED", submitted_at: "2026-06-01T06:00:00Z", user: { login: "lea" } }],
+      reviewComments: [{ created_at: "2026-06-01T02:00:00Z", user: { login: "lea" } }]
+    })
+  ];
+
+  const stats = computeStats(merged, []);
+  assert.equal(stats.medianTimeToFirstReview, 2);
+  assert.equal(stats.medianTimeToApproval, 6);
 });
 
 test("stats include approval timing from open pulls", () => {

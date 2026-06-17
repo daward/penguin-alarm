@@ -410,7 +410,9 @@ label span {
 
 .avatar-fallback {
   width: 52px;
+  min-width: 52px;
   height: 52px;
+  flex: 0 0 52px;
   border-radius: 18px;
   border: 1px solid var(--border);
   display: grid;

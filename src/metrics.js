@@ -65,8 +65,26 @@ function getQueuePriority(item) {
   return 1;
 }
 
-function hasDetailData(pull) {
-  return pull.hasDetailData !== false;
+function hasReviewData(pull) {
+  return pull.hasReviewData !== false;
+}
+
+function hasCommentData(pull) {
+  return pull.hasCommentData !== false;
+}
+
+function getFirstReviewActivityAt(pull) {
+  const timestamps = [
+    ...pull.reviews.map((review) => review.submitted_at),
+    ...pull.reviewComments.map((comment) => comment.created_at),
+    ...pull.issueComments.map((comment) => comment.created_at)
+  ].filter(Boolean);
+
+  if (!timestamps.length) {
+    return null;
+  }
+
+  return timestamps.sort((left, right) => Date.parse(left) - Date.parse(right))[0];
 }
 
 export function computeQueueScore(pull, viewerLogin) {
@@ -157,11 +175,10 @@ export function computeStats(mergedPulls, openPulls, options = {}) {
   const merged = mergedPulls.length;
   const open = openPulls.length;
   const reviewStatsPulls = includeOpenInReviewStats ? [...mergedPulls, ...openPulls] : mergedPulls;
-  const reviewStatsWithDetails = reviewStatsPulls.filter(hasDetailData);
-  const pullsWithDetails = [...mergedPulls, ...openPulls].filter(hasDetailData);
+  const reviewStatsWithDetails = reviewStatsPulls.filter(hasReviewData);
+  const pullsWithCommentDetails = [...mergedPulls, ...openPulls].filter(hasCommentData);
   const firstReviewTimes = reviewStatsWithDetails.map((pull) => {
-    const firstReview = [...pull.reviews].sort((left, right) => Date.parse(left.submitted_at) - Date.parse(right.submitted_at))[0];
-    return hoursBetween(pull.created_at, firstReview?.submitted_at);
+    return hoursBetween(pull.created_at, getFirstReviewActivityAt(pull));
   });
   const firstApprovalTimes = reviewStatsWithDetails.map((pull) => {
     const firstApproval = [...pull.reviews]
@@ -170,7 +187,7 @@ export function computeStats(mergedPulls, openPulls, options = {}) {
     return hoursBetween(pull.created_at, firstApproval?.submitted_at);
   });
   const mergeTimes = mergedPulls.map((pull) => hoursBetween(pull.created_at, pull.merged_at));
-  const totalComments = pullsWithDetails.reduce(
+  const totalComments = pullsWithCommentDetails.reduce(
     (sum, pull) => sum + pull.reviewComments.length + pull.issueComments.length,
     0
   );
@@ -178,7 +195,7 @@ export function computeStats(mergedPulls, openPulls, options = {}) {
   return {
     openPulls: open,
     mergedPulls: merged,
-    commentRate: Number((totalComments / Math.max(1, pullsWithDetails.length)).toFixed(2)),
+    commentRate: Number((totalComments / Math.max(1, pullsWithCommentDetails.length)).toFixed(2)),
     mergeRate: Number((merged / Math.max(1, merged + open)).toFixed(2)),
     medianTimeToFirstReview: median(firstReviewTimes),
     averageTimeToFirstReview: average(firstReviewTimes),

@@ -138,6 +138,23 @@ function normalizeLogin(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function shouldFetchAvatarWithToken(src) {
+  if (!src) {
+    return false;
+  }
+
+  try {
+    const { protocol, hostname } = new URL(src);
+    if (!/^https?:$/.test(protocol)) {
+      return false;
+    }
+
+    return hostname !== "avatars.githubusercontent.com" && !hostname.endsWith(".githubusercontent.com");
+  } catch {
+    return false;
+  }
+}
+
 function filterPullsByTeam(pulls, teamMembers) {
   const members = teamMembers.map(normalizeLogin).filter(Boolean);
   if (!members.length) {
@@ -150,10 +167,50 @@ function filterPullsByTeam(pulls, teamMembers) {
 
 function AvatarImage({ src, alt, token }) {
   const [didFail, setDidFail] = useState(false);
+  const [resolvedSrc, setResolvedSrc] = useState(src || "");
 
   useEffect(() => {
     setDidFail(false);
-  }, [src]);
+    setResolvedSrc(src || "");
+
+    if (!src || !token || !shouldFetchAvatarWithToken(src)) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let objectUrl = "";
+
+    startTransition(() => {
+      fetch(src, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        signal: controller.signal
+      })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`Avatar request failed with ${response.status}`);
+          }
+          return response.blob();
+        })
+        .then((blob) => {
+          objectUrl = URL.createObjectURL(blob);
+          setResolvedSrc(objectUrl);
+        })
+        .catch((error) => {
+          if (error.name !== "AbortError") {
+            setDidFail(true);
+          }
+        });
+    });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [src, token]);
 
   if (!src || didFail) {
     return (
@@ -163,8 +220,7 @@ function AvatarImage({ src, alt, token }) {
     );
   }
 
-
-  return <img src={src} alt={alt} loading="lazy" onError={() => setDidFail(true)} />;
+  return <img src={resolvedSrc} alt={alt} loading="lazy" onError={() => setDidFail(true)} />;
 }
 
 function getRepoInputGuidance(provider) {

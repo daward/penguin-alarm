@@ -147,7 +147,8 @@ function normalizeMergeRequest(mergeRequest, repoLabel, detail) {
       ? "blocked"
       : "clean",
     repoName: repoLabel,
-    hasDetailData: true,
+    hasReviewData: true,
+    hasCommentData: true,
     user: toUser(mergeRequest.author),
     requested_reviewers: (mergeRequest.reviewers || []).map(toUser),
     reviews: approvalReviews,
@@ -157,7 +158,10 @@ function normalizeMergeRequest(mergeRequest, repoLabel, detail) {
 }
 
 async function normalizeMergeRequestSummary(apiRoot, projectPath, mergeRequest, repoLabel, token) {
-  const approvedBy = await fetchMergeRequestApprovals(apiRoot, projectPath, mergeRequest, token);
+  const detail = await fetchCachedMergeRequestDetails(apiRoot, projectPath, mergeRequest, token);
+  const noteComments = toCommentItems(detail.notes);
+  const diffComments = toCommentItems(detail.discussionNotes);
+  const approvalReviews = toApprovalReviews(detail.approvedBy);
 
   return {
     id: mergeRequest.id,
@@ -172,12 +176,13 @@ async function normalizeMergeRequestSummary(apiRoot, projectPath, mergeRequest, 
       ? "blocked"
       : "clean",
     repoName: repoLabel,
-    hasDetailData: false,
+    hasReviewData: true,
+    hasCommentData: true,
     user: toUser(mergeRequest.author),
     requested_reviewers: (mergeRequest.reviewers || []).map(toUser),
-    reviews: toApprovalReviews(approvedBy),
-    reviewComments: [],
-    issueComments: []
+    reviews: approvalReviews,
+    reviewComments: diffComments,
+    issueComments: noteComments
   };
 }
 

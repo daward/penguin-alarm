@@ -94,7 +94,7 @@ test("github snapshot reuses cached pull details when updated_at is unchanged", 
   }
 });
 
-test("github snapshot fetches only merged pull approvals", async () => {
+test("github snapshot fetches merged pull review activity", async () => {
   __resetGithubAdapterCache();
 
   const originalFetch = globalThis.fetch;
@@ -132,8 +132,14 @@ test("github snapshot fetches only merged pull approvals", async () => {
       });
     }
 
-    if (url.includes("/pulls/9/comments") || url.includes("/issues/9/comments")) {
-      throw new Error(`Merged comment endpoint should not be called: ${url}`);
+    if (url.includes("/pulls/9/comments")) {
+      return createJsonResponse([{ created_at: "2026-06-11T00:30:00Z", user: { login: "lea" } }], {
+        link: ""
+      });
+    }
+
+    if (url.includes("/issues/9/comments")) {
+      return createJsonResponse([], { link: "" });
     }
 
     throw new Error(`Unexpected URL: ${url}`);
@@ -142,12 +148,14 @@ test("github snapshot fetches only merged pull approvals", async () => {
   try {
     const snapshot = await githubAdapter.fetchRepoSnapshot("owner/repo", "token", 14);
     assert.equal(snapshot.mergedPulls.length, 1);
-    assert.equal(snapshot.mergedPulls[0].hasDetailData, false);
+    assert.equal(snapshot.mergedPulls[0].hasReviewData, true);
+    assert.equal(snapshot.mergedPulls[0].hasCommentData, true);
     assert.equal(snapshot.mergedPulls[0].reviews.length, 1);
+    assert.equal(snapshot.mergedPulls[0].reviewComments.length, 1);
     assert.equal(calls.filter((url) => url.includes("/pulls/9/reviews")).length, 1);
     assert.equal(
       calls.filter((url) => url.includes("/pulls/9/comments") || url.includes("/issues/9/comments")).length,
-      0
+      2
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -220,7 +228,7 @@ test("gitlab snapshot re-fetches merge request details after an update", async (
   }
 });
 
-test("gitlab snapshot fetches only merged request approvals", async () => {
+test("gitlab snapshot fetches merged request review activity", async () => {
   __resetGitlabAdapterCache();
 
   const originalFetch = globalThis.fetch;
@@ -259,8 +267,12 @@ test("gitlab snapshot fetches only merged request approvals", async () => {
       return createJsonResponse({ approved_by: [{ approved_at: "2026-06-11T01:00:00Z", user: { username: "lea" } }] });
     }
 
-    if (url.includes("/merge_requests/8/notes") || url.includes("/merge_requests/8/discussions")) {
-      throw new Error(`Merged comment endpoint should not be called: ${url}`);
+    if (url.includes("/merge_requests/8/notes")) {
+      return createJsonResponse([{ id: 1, body: "first pass", created_at: "2026-06-11T00:30:00Z", system: false, author: { username: "lea" } }], { "x-next-page": "" });
+    }
+
+    if (url.includes("/merge_requests/8/discussions")) {
+      return createJsonResponse([], { "x-next-page": "" });
     }
 
     throw new Error(`Unexpected URL: ${url}`);
@@ -269,8 +281,10 @@ test("gitlab snapshot fetches only merged request approvals", async () => {
   try {
     const snapshot = await gitlabAdapter.fetchRepoSnapshot("gitlab.com/acme/repo", "token", 14);
     assert.equal(snapshot.mergedPulls.length, 1);
-    assert.equal(snapshot.mergedPulls[0].hasDetailData, false);
+    assert.equal(snapshot.mergedPulls[0].hasReviewData, true);
+    assert.equal(snapshot.mergedPulls[0].hasCommentData, true);
     assert.equal(snapshot.mergedPulls[0].reviews.length, 1);
+    assert.equal(snapshot.mergedPulls[0].issueComments.length, 1);
     assert.equal(
       calls.filter(
         (url) =>
@@ -282,7 +296,7 @@ test("gitlab snapshot fetches only merged request approvals", async () => {
       calls.filter(
         (url) => url.includes("/merge_requests/8/notes") || url.includes("/merge_requests/8/discussions")
       ).length,
-      0
+      2
     );
   } finally {
     globalThis.fetch = originalFetch;

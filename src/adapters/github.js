@@ -206,14 +206,13 @@ async function fetchPullDetails(apiRoot, repoName, pull, token, useApiVersionHea
 }
 
 async function normalizePullSummary(apiRoot, repoName, pull, token, useApiVersionHeader) {
-  const reviews = await fetchPullReviews(apiRoot, repoName, pull, token, useApiVersionHeader);
+  const details = await fetchPullDetails(apiRoot, repoName, pull, token, useApiVersionHeader);
   return {
     ...pull,
     repoName,
-    reviews,
-    reviewComments: [],
-    issueComments: [],
-    hasDetailData: false
+    ...details,
+    hasReviewData: true,
+    hasCommentData: true
   };
 }
 
@@ -235,7 +234,8 @@ async function fetchRepoSnapshot(repoName, token, daysBack) {
       return {
         ...pull,
         repoName: normalizedRepo,
-        hasDetailData: true,
+        hasReviewData: true,
+        hasCommentData: true,
         ...details
       };
     })
