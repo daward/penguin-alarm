@@ -156,7 +156,9 @@ function normalizeMergeRequest(mergeRequest, repoLabel, detail) {
   };
 }
 
-function normalizeMergeRequestSummary(mergeRequest, repoLabel) {
+async function normalizeMergeRequestSummary(apiRoot, projectPath, mergeRequest, repoLabel, token) {
+  const approvedBy = await fetchMergeRequestApprovals(apiRoot, projectPath, mergeRequest, token);
+
   return {
     id: mergeRequest.id,
     number: mergeRequest.iid,
@@ -173,7 +175,7 @@ function normalizeMergeRequestSummary(mergeRequest, repoLabel) {
     hasDetailData: false,
     user: toUser(mergeRequest.author),
     requested_reviewers: (mergeRequest.reviewers || []).map(toUser),
-    reviews: [],
+    reviews: toApprovalReviews(approvedBy),
     reviewComments: [],
     issueComments: []
   };
@@ -251,6 +253,22 @@ async function fetchCachedMergeRequestDetails(apiRoot, projectPath, mergeRequest
   return value;
 }
 
+async function fetchMergeRequestApprovals(apiRoot, projectPath, mergeRequest, token) {
+  const cacheKey = `${buildDetailCacheKey(apiRoot, projectPath, mergeRequest.iid)}|approvals-only`;
+  const marker = buildDetailCacheMarker(mergeRequest);
+  const cached = detailCache.get(cacheKey);
+
+  if (cached?.marker === marker) {
+    return cached.value;
+  }
+
+  const projectId = encodeURIComponent(projectPath);
+  const approvals = await requestJson(`${apiRoot}/projects/${projectId}/merge_requests/${mergeRequest.iid}/approvals`, token);
+  const value = approvals.data.approved_by || [];
+  detailCache.set(cacheKey, { marker, value });
+  return value;
+}
+
 export async function fetchRepoSnapshot(repoName, token, daysBack) {
   const target = parseRepoTarget(repoName);
   const apiRoot = `https://${target.host}/api/v4`;
@@ -272,7 +290,11 @@ export async function fetchRepoSnapshot(repoName, token, daysBack) {
       return normalizeMergeRequest(mergeRequest, target.label, detail);
     })
   );
-  const summarizedMergedPulls = mergedRecent.map((mergeRequest) => normalizeMergeRequestSummary(mergeRequest, target.label));
+  const summarizedMergedPulls = await Promise.all(
+    mergedRecent.map((mergeRequest) =>
+      normalizeMergeRequestSummary(apiRoot, target.projectPath, mergeRequest, target.label, token)
+    )
+  );
 
   return {
     repo: target.label,

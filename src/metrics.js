@@ -45,12 +45,34 @@ function uniqueByUserAndState(reviews, state) {
   });
 }
 
+function hasReviewFromUser(reviews, state, viewerLogin) {
+  if (!viewerLogin) {
+    return false;
+  }
+
+  return reviews.some((review) => review.state === state && review.user?.login === viewerLogin);
+}
+
+function getQueuePriority(item) {
+  if (item.isOwnPull && item.ownPullHasAnyApproval) {
+    return 0;
+  }
+
+  if (item.viewerApproved) {
+    return 2;
+  }
+
+  return 1;
+}
+
 function hasDetailData(pull) {
   return pull.hasDetailData !== false;
 }
 
 export function computeQueueScore(pull, viewerLogin) {
   let score = 0;
+  const approvalCount = uniqueByUserAndState(pull.reviews, "APPROVED").length;
+  const isOwnPull = pull.user?.login === viewerLogin;
 
   const ageHours = Math.max(1, hoursBetween(pull.created_at, new Date().toISOString()) || 0);
   score += Math.min(ageHours / 12, 10);
@@ -71,8 +93,12 @@ export function computeQueueScore(pull, viewerLogin) {
     score -= 1;
   }
 
-  if (pull.user?.login === viewerLogin) {
-    score -= 5;
+  if (isOwnPull) {
+    if (approvalCount > 0) {
+      score += 15;
+    } else {
+      score -= 5;
+    }
   }
 
   return Number(score.toFixed(2));
@@ -95,11 +121,24 @@ export function buildQueueItems(openPulls, viewerLogin, queueFilter) {
     })
     .map((pull) => ({
       ...pull,
+      viewerLogin,
       queueScore: computeQueueScore(pull, viewerLogin),
       commentCount: pull.reviewComments.length + pull.issueComments.length,
-      approvalCount: uniqueByUserAndState(pull.reviews, "APPROVED").length
+      approvalCount: uniqueByUserAndState(pull.reviews, "APPROVED").length,
+      isOwnPull: pull.user?.login === viewerLogin,
+      viewerApproved: hasReviewFromUser(pull.reviews, "APPROVED", viewerLogin),
+      ownPullHasAnyApproval: pull.user?.login === viewerLogin && uniqueByUserAndState(pull.reviews, "APPROVED").length > 0
     }))
-    .sort((left, right) => right.queueScore - left.queueScore);
+    .sort((left, right) => {
+      const leftPriority = getQueuePriority(left);
+      const rightPriority = getQueuePriority(right);
+
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+
+      return right.queueScore - left.queueScore;
+    });
 }
 
 export function buildMergedItems(mergedPulls) {
@@ -113,16 +152,18 @@ export function buildMergedItems(mergedPulls) {
     }));
 }
 
-export function computeStats(mergedPulls, openPulls) {
+export function computeStats(mergedPulls, openPulls, options = {}) {
+  const { includeOpenInReviewStats = false } = options;
   const merged = mergedPulls.length;
   const open = openPulls.length;
-  const mergedWithDetails = mergedPulls.filter(hasDetailData);
+  const reviewStatsPulls = includeOpenInReviewStats ? [...mergedPulls, ...openPulls] : mergedPulls;
+  const reviewStatsWithDetails = reviewStatsPulls.filter(hasDetailData);
   const pullsWithDetails = [...mergedPulls, ...openPulls].filter(hasDetailData);
-  const firstReviewTimes = mergedWithDetails.map((pull) => {
+  const firstReviewTimes = reviewStatsWithDetails.map((pull) => {
     const firstReview = [...pull.reviews].sort((left, right) => Date.parse(left.submitted_at) - Date.parse(right.submitted_at))[0];
     return hoursBetween(pull.created_at, firstReview?.submitted_at);
   });
-  const firstApprovalTimes = mergedWithDetails.map((pull) => {
+  const firstApprovalTimes = reviewStatsWithDetails.map((pull) => {
     const firstApproval = [...pull.reviews]
       .filter((review) => review.state === "APPROVED")
       .sort((left, right) => Date.parse(left.submitted_at) - Date.parse(right.submitted_at))[0];
@@ -185,6 +226,8 @@ export function computeLeaderboard(allPulls) {
       const commentShare = totals.comments ? user.comments / totals.comments : 0;
       return {
         ...user,
+        approvalShare: Number(approvalShare.toFixed(3)),
+        commentShare: Number(commentShare.toFixed(3)),
         score: Number((approvalShare + commentShare).toFixed(3))
       };
     })

@@ -37,6 +37,63 @@ function relativeTime(value) {
   return `${Math.round(deltaHours / 24)}d ago`;
 }
 
+function formatDurationHours(value) {
+  if (!Number.isFinite(value)) {
+    return "n/a";
+  }
+
+  if (value === 0) {
+    return "0h";
+  }
+
+  if (value >= 72) {
+    return `${Number((value / 24).toFixed(2))}d`;
+  }
+
+  return `${Number(value.toFixed(2))}h`;
+}
+
+function getQueueScoreExplanation(pull) {
+  const factors = [];
+
+  if (!pull.draft) {
+    factors.push("+3 ready for review");
+  }
+
+  if (pull.requested_reviewers?.some((reviewer) => reviewer.login === pull.viewerLogin)) {
+    factors.push("+7 you are a requested reviewer");
+  }
+
+  if (pull.reviewComments.length + pull.issueComments.length === 0) {
+    factors.push("+2 no discussion yet");
+  }
+
+  if (pull.mergeable_state === "blocked") {
+    factors.push("-1 merge is blocked");
+  }
+
+  if (pull.isOwnPull) {
+    if (pull.ownPullHasAnyApproval) {
+      factors.push("+15 your PR has an approval");
+    } else {
+      factors.push("-5 your PR is still waiting on approval");
+    }
+  }
+
+  factors.push(`${Math.min(Math.max(1, (Date.now() - Date.parse(pull.created_at)) / (1000 * 60 * 60)) / 12, 10).toFixed(2)} age points`);
+
+  return [`Queue score: ${pull.queueScore}`, ...factors];
+}
+
+function getLeaderboardScoreExplanation(user) {
+  return [
+    `Leaderboard score: ${user.score}`,
+    `${user.approvalShare} from approvals (${Math.round(user.approvalShare * 100)}% share)`,
+    `${user.commentShare} from comments (${Math.round(user.commentShare * 100)}% share)`,
+    `${user.approvalShare} + ${user.commentShare} = ${user.score}`
+  ];
+}
+
 function pullKey(pull) {
   return `${pull.repoName}#${pull.number}`;
 }
@@ -180,7 +237,7 @@ function useBootstrapState() {
   };
 }
 
-function StatPanel({ stats }) {
+function StatPanel({ stats, includeOpenInStats, onToggleIncludeOpen }) {
   const [timeMetricMode, setTimeMetricMode] = useState({
     firstReview: "median",
     approval: "median",
@@ -192,6 +249,9 @@ function StatPanel({ stats }) {
       <section className="panel">
         <div className="panel-header">
           <h2>Team Stats</h2>
+          <button type="button" className="toggle-chip" onClick={onToggleIncludeOpen}>
+            {includeOpenInStats ? "Include open" : "Merged only"}
+          </button>
         </div>
         <p className="muted">Add a token and repos to load metrics.</p>
       </section>
@@ -209,19 +269,22 @@ function StatPanel({ stats }) {
     { label: "Comment rate", value: stats.commentRate },
     { label: "Merge rate", value: stats.mergeRate },
     {
-      label: `${timeMetricMode.firstReview === "median" ? "Median" : "Average"} first review (hrs)`,
-      value:
-        timeMetricMode.firstReview === "median" ? stats.medianTimeToFirstReview : stats.averageTimeToFirstReview,
+      label: `${timeMetricMode.firstReview === "median" ? "Median" : "Average"} first review`,
+      value: formatDurationHours(
+        timeMetricMode.firstReview === "median" ? stats.medianTimeToFirstReview : stats.averageTimeToFirstReview
+      ),
       metricKey: "firstReview"
     },
     {
-      label: `${timeMetricMode.approval === "median" ? "Median" : "Average"} approval time (hrs)`,
-      value: timeMetricMode.approval === "median" ? stats.medianTimeToApproval : stats.averageTimeToApproval,
+      label: `${timeMetricMode.approval === "median" ? "Median" : "Average"} approval time`,
+      value: formatDurationHours(
+        timeMetricMode.approval === "median" ? stats.medianTimeToApproval : stats.averageTimeToApproval
+      ),
       metricKey: "approval"
     },
     {
-      label: `${timeMetricMode.merge === "median" ? "Median" : "Average"} merge time (hrs)`,
-      value: timeMetricMode.merge === "median" ? stats.medianTimeToMerge : stats.averageTimeToMerge,
+      label: `${timeMetricMode.merge === "median" ? "Median" : "Average"} merge time`,
+      value: formatDurationHours(timeMetricMode.merge === "median" ? stats.medianTimeToMerge : stats.averageTimeToMerge),
       metricKey: "merge"
     }
   ];
@@ -230,6 +293,9 @@ function StatPanel({ stats }) {
     <section className="panel">
       <div className="panel-header">
         <h2>Team Stats</h2>
+        <button type="button" className="toggle-chip" onClick={onToggleIncludeOpen}>
+          {includeOpenInStats ? "Include open" : "Merged only"}
+        </button>
       </div>
       <div className="stats-list">
         {rows.map((row) => {
@@ -259,19 +325,42 @@ function StatPanel({ stats }) {
   );
 }
 
-function PullMetaRow({ statusLabel, commentCount, approvalCount }) {
+function PullMetaRow({ statusLabel, commentCount, approvalCount, isOwnPull, ownPullHasAnyApproval }) {
   return (
     <div className="meta-row">
       <span className="meta-tag">{statusLabel}</span>
       <span className="meta-tag">{commentCount} comments</span>
       <span className="meta-tag">{approvalCount} approvals</span>
+      {isOwnPull && ownPullHasAnyApproval ? <span className="meta-tag meta-tag-approval">Approved</span> : null}
     </div>
   );
 }
 
 function PullCard({ pull, subtitle, score, statusLabel, children, token }) {
+  const topRightLabel =
+    pull.isOwnPull && pull.ownPullHasAnyApproval
+      ? <strong className="card-state-ready">Ready</strong>
+      : pull.viewerApproved
+        ? <strong className="card-state-done">Done</strong>
+      : typeof score === "number"
+        ? (
+            <span className="score-tooltip">
+              <strong className="card-score" tabIndex="0" aria-describedby={`score-tooltip-${pull.repoName}-${pull.number}`}>
+                {score}
+              </strong>
+              <span className="score-tooltip-popover" role="tooltip" id={`score-tooltip-${pull.repoName}-${pull.number}`}>
+                {getQueueScoreExplanation(pull).map((line) => (
+                  <span key={line} className="score-tooltip-line">
+                    {line}
+                  </span>
+                ))}
+              </span>
+            </span>
+          )
+        : null;
+
   return (
-    <article className="card">
+    <article className={`card${pull.isOwnPull ? " card-own-pull" : ""}${pull.viewerApproved ? " card-viewer-approved" : ""}`}>
       <div className="card-top">
         <AvatarImage src={pull.user?.avatar_url} alt={pull.user?.login || "author"} token={token} />
         <div>
@@ -280,12 +369,14 @@ function PullCard({ pull, subtitle, score, statusLabel, children, token }) {
           </a>
           <p className="muted">{subtitle}</p>
         </div>
-        {typeof score === "number" ? <strong>{score}</strong> : null}
+        {topRightLabel}
       </div>
       <PullMetaRow
         statusLabel={statusLabel}
         commentCount={pull.commentCount}
         approvalCount={pull.approvalCount}
+        isOwnPull={pull.isOwnPull}
+        ownPullHasAnyApproval={pull.ownPullHasAnyApproval}
       />
       {children}
     </article>
@@ -378,7 +469,26 @@ function LeaderboardPanel({ users, token }) {
                     {user.approvals} approvals · {user.comments} comments
                   </p>
                 </div>
-                <strong>{user.score}</strong>
+                <span className="score-tooltip">
+                  <strong
+                    className="card-score"
+                    tabIndex="0"
+                    aria-describedby={`leaderboard-score-tooltip-${user.login}`}
+                  >
+                    {user.score}
+                  </strong>
+                  <span
+                    className="score-tooltip-popover"
+                    role="tooltip"
+                    id={`leaderboard-score-tooltip-${user.login}`}
+                  >
+                    {getLeaderboardScoreExplanation(user).map((line) => (
+                      <span key={line} className="score-tooltip-line">
+                        {line}
+                      </span>
+                    ))}
+                  </span>
+                </span>
               </div>
             </article>
           ))
@@ -433,6 +543,9 @@ export default function App() {
   const [mergedItems, setMergedItems] = useState(initialState.mergedItems);
   const [stats, setStats] = useState(initialState.stats);
   const [leaderboard, setLeaderboard] = useState(initialState.leaderboard);
+  const [statsOpenPulls, setStatsOpenPulls] = useState([]);
+  const [statsMergedPulls, setStatsMergedPulls] = useState([]);
+  const [includeOpenInStats, setIncludeOpenInStats] = useState(false);
   const [isSetupOpen, setIsSetupOpen] = useState(
     () => !(initialState.token && initialState.selectedConfig?.repos?.length)
   );
@@ -496,7 +609,9 @@ export default function App() {
         setRateLimit(snapshots.at(-1)?.rateLimit || viewerRateLimit);
         setQueueItems(buildQueueItems(scopedOpenPulls, viewerProfile.login, config.queueFilter));
         setMergedItems(buildMergedItems(scopedMergedPulls));
-        setStats(computeStats(scopedMergedPulls, scopedOpenPulls));
+        setStatsOpenPulls(scopedOpenPulls);
+        setStatsMergedPulls(scopedMergedPulls);
+        setStats(computeStats(scopedMergedPulls, scopedOpenPulls, { includeOpenInReviewStats: includeOpenInStats }));
         setLeaderboard(computeLeaderboard([...scopedOpenPulls, ...scopedMergedPulls]));
         setLastUpdatedAt(new Date().toISOString());
         if (failures.length) {
@@ -523,6 +638,14 @@ export default function App() {
 
     return () => window.clearInterval(timer);
   }, [token, config.id, config.provider, config.pollingMinutes, config.repos.length]);
+
+  useEffect(() => {
+    if (!statsOpenPulls.length && !statsMergedPulls.length) {
+      return;
+    }
+
+    setStats(computeStats(statsMergedPulls, statsOpenPulls, { includeOpenInReviewStats: includeOpenInStats }));
+  }, [includeOpenInStats, statsMergedPulls, statsOpenPulls]);
 
   function handleSaveToken(event) {
     event.preventDefault();
@@ -552,6 +675,8 @@ export default function App() {
       setMergedItems([]);
       setLeaderboard([]);
       setStats(null);
+      setStatsOpenPulls([]);
+      setStatsMergedPulls([]);
       setLastUpdatedAt("");
     }
   }
@@ -615,7 +740,12 @@ export default function App() {
           <h1>Penguin Alarm</h1>
         </div>
         <div className="hero-status">
-          
+          {isLoading ? (
+            <span className="header-refresh-status" aria-live="polite">
+              <span className="header-refresh-dot" aria-hidden="true" />
+              Refreshing
+            </span>
+          ) : null}
           <span>{config.repos.length} repos</span> | 
           <span >{lastUpdatedAt ? `Updated ${formatDate(lastUpdatedAt)}` : "Not loaded yet"}</span>
           <label className="header-config-switcher" aria-label="Switch monitor configuration">
@@ -643,7 +773,6 @@ export default function App() {
       </header>
 
       {error ? <div className="banner error">{error}</div> : null}
-      {isLoading ? <div className="banner info">Refreshing {adapter.label} data...</div> : null}
 
       {isSetupOpen ? (
         <section className="layout-top">
@@ -811,7 +940,11 @@ export default function App() {
           <MergedPanel items={mergedItems} ratings={ratings} onRate={handleRate} token={token} />
         </div>
         <div className="stack">
-          <StatPanel stats={stats} />
+          <StatPanel
+            stats={stats}
+            includeOpenInStats={includeOpenInStats}
+            onToggleIncludeOpen={() => setIncludeOpenInStats((value) => !value)}
+          />
           <LeaderboardPanel users={leaderboard} token={token} />
         </div>
         <OpsPanel />

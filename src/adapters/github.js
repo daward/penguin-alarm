@@ -159,6 +159,27 @@ function buildDetailCacheMarker(pull) {
   return [pull.updated_at, pull.state, pull.merged_at, pull.draft].join("|");
 }
 
+async function fetchPullReviews(apiRoot, repoName, pull, token, useApiVersionHeader) {
+  const cacheKey = `${buildDetailCacheKey(apiRoot, repoName, pull.number)}|reviews-only`;
+  const marker = buildDetailCacheMarker(pull);
+  const cached = detailCache.get(cacheKey);
+
+  if (cached?.marker === marker) {
+    return cached.value;
+  }
+
+  const reviews = await paginate(
+    `${apiRoot}/repos/${repoName}/pulls/${pull.number}/reviews?per_page=50`,
+    token,
+    2,
+    useApiVersionHeader
+  );
+
+  const value = reviews.items;
+  detailCache.set(cacheKey, { marker, value });
+  return value;
+}
+
 async function fetchPullDetails(apiRoot, repoName, pull, token, useApiVersionHeader) {
   const cacheKey = buildDetailCacheKey(apiRoot, repoName, pull.number);
   const marker = buildDetailCacheMarker(pull);
@@ -184,11 +205,12 @@ async function fetchPullDetails(apiRoot, repoName, pull, token, useApiVersionHea
   return value;
 }
 
-function normalizePullSummary(repoName, pull) {
+async function normalizePullSummary(apiRoot, repoName, pull, token, useApiVersionHeader) {
+  const reviews = await fetchPullReviews(apiRoot, repoName, pull, token, useApiVersionHeader);
   return {
     ...pull,
     repoName,
-    reviews: [],
+    reviews,
     reviewComments: [],
     issueComments: [],
     hasDetailData: false
@@ -218,7 +240,9 @@ async function fetchRepoSnapshot(repoName, token, daysBack) {
       };
     })
   );
-  const summarizedMergedPulls = mergedPulls.map((pull) => normalizePullSummary(normalizedRepo, pull));
+  const summarizedMergedPulls = await Promise.all(
+    mergedPulls.map((pull) => normalizePullSummary(apiRoot, normalizedRepo, pull, token, useApiVersionHeader))
+  );
 
   return {
     repo: normalizedRepo,

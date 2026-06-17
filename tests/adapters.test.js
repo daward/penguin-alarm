@@ -94,7 +94,7 @@ test("github snapshot reuses cached pull details when updated_at is unchanged", 
   }
 });
 
-test("github snapshot skips merged pull detail endpoints", async () => {
+test("github snapshot fetches only merged pull approvals", async () => {
   __resetGithubAdapterCache();
 
   const originalFetch = globalThis.fetch;
@@ -126,8 +126,14 @@ test("github snapshot skips merged pull detail endpoints", async () => {
       );
     }
 
-    if (url.includes("/pulls/9/") || url.includes("/issues/9/comments")) {
-      throw new Error(`Merged detail endpoint should not be called: ${url}`);
+    if (url.includes("/pulls/9/reviews")) {
+      return createJsonResponse([{ state: "APPROVED", submitted_at: "2026-06-11T01:00:00Z", user: { login: "lea" } }], {
+        link: ""
+      });
+    }
+
+    if (url.includes("/pulls/9/comments") || url.includes("/issues/9/comments")) {
+      throw new Error(`Merged comment endpoint should not be called: ${url}`);
     }
 
     throw new Error(`Unexpected URL: ${url}`);
@@ -137,8 +143,12 @@ test("github snapshot skips merged pull detail endpoints", async () => {
     const snapshot = await githubAdapter.fetchRepoSnapshot("owner/repo", "token", 14);
     assert.equal(snapshot.mergedPulls.length, 1);
     assert.equal(snapshot.mergedPulls[0].hasDetailData, false);
-    assert.deepEqual(snapshot.mergedPulls[0].reviews, []);
-    assert.equal(calls.filter((url) => url.includes("/pulls/9/") || url.includes("/issues/9/comments")).length, 0);
+    assert.equal(snapshot.mergedPulls[0].reviews.length, 1);
+    assert.equal(calls.filter((url) => url.includes("/pulls/9/reviews")).length, 1);
+    assert.equal(
+      calls.filter((url) => url.includes("/pulls/9/comments") || url.includes("/issues/9/comments")).length,
+      0
+    );
   } finally {
     globalThis.fetch = originalFetch;
     __resetGithubAdapterCache();
@@ -210,7 +220,7 @@ test("gitlab snapshot re-fetches merge request details after an update", async (
   }
 });
 
-test("gitlab snapshot skips merged request detail endpoints", async () => {
+test("gitlab snapshot fetches only merged request approvals", async () => {
   __resetGitlabAdapterCache();
 
   const originalFetch = globalThis.fetch;
@@ -245,8 +255,12 @@ test("gitlab snapshot skips merged request detail endpoints", async () => {
       );
     }
 
-    if (url.includes("/merge_requests/8/notes") || url.includes("/merge_requests/8/discussions") || url.includes("/merge_requests/8/approvals")) {
-      throw new Error(`Merged detail endpoint should not be called: ${url}`);
+    if (url.includes("/merge_requests/8/approvals")) {
+      return createJsonResponse({ approved_by: [{ approved_at: "2026-06-11T01:00:00Z", user: { username: "lea" } }] });
+    }
+
+    if (url.includes("/merge_requests/8/notes") || url.includes("/merge_requests/8/discussions")) {
+      throw new Error(`Merged comment endpoint should not be called: ${url}`);
     }
 
     throw new Error(`Unexpected URL: ${url}`);
@@ -256,13 +270,17 @@ test("gitlab snapshot skips merged request detail endpoints", async () => {
     const snapshot = await gitlabAdapter.fetchRepoSnapshot("gitlab.com/acme/repo", "token", 14);
     assert.equal(snapshot.mergedPulls.length, 1);
     assert.equal(snapshot.mergedPulls[0].hasDetailData, false);
-    assert.deepEqual(snapshot.mergedPulls[0].reviews, []);
+    assert.equal(snapshot.mergedPulls[0].reviews.length, 1);
     assert.equal(
       calls.filter(
         (url) =>
-          url.includes("/merge_requests/8/notes") ||
-          url.includes("/merge_requests/8/discussions") ||
           url.includes("/merge_requests/8/approvals")
+      ).length,
+      1
+    );
+    assert.equal(
+      calls.filter(
+        (url) => url.includes("/merge_requests/8/notes") || url.includes("/merge_requests/8/discussions")
       ).length,
       0
     );
