@@ -2,7 +2,7 @@ import { startTransition, useEffect, useMemo, useState } from "react";
 
 import { PROVIDERS, DEFAULT_CONFIG, QUEUE_FILTERS, RATING_OPTIONS } from "./constants.js";
 import { getAdapter } from "./adapters/index.js";
-import { buildMergedItems, buildQueueItems, computeDailyActivity, computeLeaderboard, computeStats } from "./metrics.js";
+import { buildMergedItems, buildQueueItems, computeDailyActivity, computeLeaderboard, computePersonalDailyActivity, computeStats } from "./metrics.js";
 import {
   createId,
   clearToken,
@@ -619,9 +619,9 @@ function OpsPanel() {
   );
 }
 
-function ActivityChart({ data }) {
+function ActivityChart({ data, emptyMessage = "Load repos to see daily approvals, comments, and merges." }) {
   if (!data.length) {
-    return <p className="muted">Load repos to see daily approvals, comments, and merges.</p>;
+    return <p className="muted">{emptyMessage}</p>;
   }
 
   const height = 260;
@@ -725,7 +725,7 @@ function ActivityChart({ data }) {
   );
 }
 
-function ActivityPanel({ activity }) {
+function ActivityPanel({ title, activity, emptyMessage }) {
   const totals = activity.reduce(
     (summary, day) => ({
       approvals: summary.approvals + day.approvals,
@@ -738,14 +738,14 @@ function ActivityPanel({ activity }) {
   return (
     <section className="panel activity-panel">
       <div className="panel-header">
-        <h2>Daily Activity</h2>
+        <h2>{title}</h2>
         <div className="activity-totals">
           <span className="badge">{totals.approvals} approvals</span>
           <span className="badge">{totals.comments} comments</span>
           <span className="badge">{totals.merges} merges</span>
         </div>
       </div>
-      <ActivityChart data={activity} />
+      <ActivityChart data={activity} emptyMessage={emptyMessage} />
     </section>
   );
 }
@@ -787,6 +787,17 @@ export default function App() {
   const activity = useMemo(
     () => computeDailyActivity(statsOpenPulls, statsMergedPulls, config.botUsers || [], config.timeWindowDays),
     [config.botUsers, config.timeWindowDays, statsMergedPulls, statsOpenPulls]
+  );
+  const personalActivity = useMemo(
+    () =>
+      computePersonalDailyActivity(
+        statsOpenPulls,
+        statsMergedPulls,
+        profile?.login,
+        config.botUsers || [],
+        config.timeWindowDays
+      ),
+    [config.botUsers, config.timeWindowDays, profile?.login, statsMergedPulls, statsOpenPulls]
   );
 
   useEffect(() => {
@@ -1218,7 +1229,16 @@ export default function App() {
         </section>
       ) : (
         <section className="layout-activity">
-          <ActivityPanel activity={activity} />
+          <ActivityPanel
+            title="Daily Activity"
+            activity={activity}
+            emptyMessage="Load repos to see daily approvals, comments, and merges."
+          />
+          <ActivityPanel
+            title="My Activity"
+            activity={personalActivity}
+            emptyMessage="Load repos to see your daily approvals, comments, and merged PRs."
+          />
         </section>
       )}
     </main>

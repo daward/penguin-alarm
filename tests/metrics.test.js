@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildQueueItems, computeDailyActivity, computeLeaderboard, computeStats } from "../src/metrics.js";
+import { buildQueueItems, computeDailyActivity, computeLeaderboard, computePersonalDailyActivity, computeStats } from "../src/metrics.js";
 
 function makePull(overrides = {}) {
   return {
@@ -383,6 +383,34 @@ test("daily activity is limited to the configured trailing day window", () => {
   assert.deepEqual(activity, [
     { day: "2026-06-09", approvals: 0, comments: 0, merges: 0 },
     { day: "2026-06-10", approvals: 0, comments: 0, merges: 0 },
+    { day: "2026-06-11", approvals: 1, comments: 1, merges: 1 }
+  ]);
+});
+
+test("personal daily activity counts only the viewer's approvals, comments, and merged PRs", () => {
+  const open = [
+    makePull({
+      merged_at: null,
+      reviews: [{ state: "APPROVED", submitted_at: "2026-06-10T04:00:00Z", user: { login: "sam" } }],
+      reviewComments: [{ created_at: "2026-06-10T07:00:00Z", user: { login: "sam" } }],
+      issueComments: [{ created_at: "2026-06-10T09:00:00Z", user: { login: "lea" } }]
+    })
+  ];
+  const merged = [
+    makePull({
+      merged_at: "2026-06-11T12:00:00Z",
+      user: { login: "sam", avatar_url: "https://example.com/sam.png" },
+      reviews: [
+        { state: "APPROVED", submitted_at: "2026-06-11T01:00:00Z", user: { login: "sam" } },
+        { state: "APPROVED", submitted_at: "2026-06-11T02:00:00Z", user: { login: "ben" } }
+      ],
+      issueComments: [{ created_at: "2026-06-11T03:00:00Z", user: { login: "sam" } }]
+    })
+  ];
+
+  const activity = computePersonalDailyActivity(open, merged, "sam", [], 2, new Date("2026-06-11T15:00:00Z"));
+  assert.deepEqual(activity, [
+    { day: "2026-06-10", approvals: 1, comments: 1, merges: 0 },
     { day: "2026-06-11", approvals: 1, comments: 1, merges: 1 }
   ]);
 });

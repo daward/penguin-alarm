@@ -302,15 +302,14 @@ function enumerateUtcDaysInRange(start, end) {
   return days;
 }
 
-export function computeDailyActivity(openPulls, mergedPulls, botUsers = [], daysBack = 14, now = new Date()) {
-  const botUserSet = createBotUserSet(botUsers);
-  const counters = new Map();
+function createDailyActivityCounter(daysBack = 14, now = new Date()) {
   const safeDaysBack = Math.max(1, Number(daysBack) || 1);
   const end = startOfUtcDay(now);
   const start = new Date(end);
   start.setUTCDate(start.getUTCDate() - (safeDaysBack - 1));
   const rangeStartMs = start.getTime();
   const rangeEndMs = end.getTime() + 24 * 60 * 60 * 1000;
+  const counters = new Map();
 
   function ensureDay(dayKey) {
     if (!dayKey) {
@@ -333,6 +332,18 @@ export function computeDailyActivity(openPulls, mergedPulls, botUsers = [], days
     const timestamp = Date.parse(value);
     return Number.isFinite(timestamp) && timestamp >= rangeStartMs && timestamp < rangeEndMs;
   }
+
+  function toSeries() {
+    const allDayKeys = enumerateUtcDaysInRange(start, end);
+    return allDayKeys.map((dayKey) => counters.get(dayKey) || { day: dayKey, approvals: 0, comments: 0, merges: 0 });
+  }
+
+  return { ensureDay, isWithinRange, toSeries };
+}
+
+export function computeDailyActivity(openPulls, mergedPulls, botUsers = [], daysBack = 14, now = new Date()) {
+  const botUserSet = createBotUserSet(botUsers);
+  const { ensureDay, isWithinRange, toSeries } = createDailyActivityCounter(daysBack, now);
 
   function addApprovalEvents(pulls) {
     for (const pull of pulls) {
@@ -381,6 +392,75 @@ export function computeDailyActivity(openPulls, mergedPulls, botUsers = [], days
     }
   }
 
-  const allDayKeys = enumerateUtcDaysInRange(start, end);
-  return allDayKeys.map((dayKey) => counters.get(dayKey) || { day: dayKey, approvals: 0, comments: 0, merges: 0 });
+  return toSeries();
+}
+
+export function computePersonalDailyActivity(
+  openPulls,
+  mergedPulls,
+  viewerLogin,
+  botUsers = [],
+  daysBack = 14,
+  now = new Date()
+) {
+  const normalizedViewerLogin = normalizeLogin(viewerLogin);
+  const botUserSet = createBotUserSet(botUsers);
+  const { ensureDay, isWithinRange, toSeries } = createDailyActivityCounter(daysBack, now);
+
+  if (!normalizedViewerLogin) {
+    return toSeries();
+  }
+
+  function isViewer(login) {
+    return normalizeLogin(login) === normalizedViewerLogin;
+  }
+
+  function addApprovalEvents(pulls) {
+    for (const pull of pulls) {
+      for (const review of filterReviews(pull.reviews, botUserSet)) {
+        if (review.state !== "APPROVED" || !isViewer(review.user?.login) || !isWithinRange(review.submitted_at)) {
+          continue;
+        }
+
+        const day = ensureDay(formatUtcDayKey(review.submitted_at));
+        if (day) {
+          day.approvals += 1;
+        }
+      }
+    }
+  }
+
+  function addCommentEvents(pulls) {
+    for (const pull of pulls) {
+      const comments = [...filterComments(pull.reviewComments, botUserSet), ...filterComments(pull.issueComments, botUserSet)];
+      for (const comment of comments) {
+        if (!isViewer(comment.user?.login) || !isWithinRange(comment.created_at)) {
+          continue;
+        }
+
+        const day = ensureDay(formatUtcDayKey(comment.created_at));
+        if (day) {
+          day.comments += 1;
+        }
+      }
+    }
+  }
+
+  addApprovalEvents(openPulls);
+  addApprovalEvents(mergedPulls);
+  addCommentEvents(openPulls);
+  addCommentEvents(mergedPulls);
+
+  for (const pull of mergedPulls) {
+    if (!isViewer(pull.user?.login) || !isWithinRange(pull.merged_at)) {
+      continue;
+    }
+
+    const day = ensureDay(formatUtcDayKey(pull.merged_at));
+    if (day) {
+      day.merges += 1;
+    }
+  }
+
+  return toSeries();
 }
