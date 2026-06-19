@@ -106,6 +106,7 @@ export function normalizeConfig(config) {
     teamMembers,
     botUsers,
     repoGroups,
+    youtubeLivestreamUrl: String(config.youtubeLivestreamUrl || "").trim(),
     timeWindowDays: Math.max(1, Number(config.timeWindowDays) || DEFAULT_CONFIG.timeWindowDays),
     pollingMinutes: Math.max(1, Number(config.pollingMinutes) || DEFAULT_CONFIG.pollingMinutes)
   };
@@ -160,6 +161,29 @@ export function writeRating(prKey, rating, storage = localStorage) {
   const ratings = readRatings(storage);
   ratings[prKey] = rating;
   storage.setItem(STORAGE_KEYS.ratings, JSON.stringify(ratings));
+}
+
+export function readPanelOrders(storage = localStorage) {
+  const orders = safeJsonParse(storage.getItem(STORAGE_KEYS.panelOrders), {});
+  return orders && typeof orders === "object" ? orders : {};
+}
+
+export function readPanelOrder(pageKey, defaultOrder, storage = localStorage) {
+  const storedOrder = readPanelOrders(storage)[pageKey];
+  if (!Array.isArray(storedOrder)) {
+    return [...defaultOrder];
+  }
+
+  const knownIds = new Set(defaultOrder);
+  const normalized = storedOrder.filter((id) => knownIds.has(id));
+  const missing = defaultOrder.filter((id) => !normalized.includes(id));
+  return [...normalized, ...missing];
+}
+
+export function writePanelOrder(pageKey, order, storage = localStorage) {
+  const orders = readPanelOrders(storage);
+  orders[pageKey] = [...order];
+  storage.setItem(STORAGE_KEYS.panelOrders, JSON.stringify(orders));
 }
 
 export function exportConfig(config) {

@@ -1,8 +1,12 @@
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import { SortableContext, arrayMove, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
-import { PROVIDERS, DEFAULT_CONFIG, QUEUE_FILTERS, RATING_OPTIONS } from "./constants.js";
+import { PROVIDERS, DEFAULT_CONFIG, QUEUE_FILTERS } from "./constants.js";
 import { getAdapter } from "./adapters/index.js";
 import { buildMergedItems, buildQueueItems, computeDailyActivity, computeLeaderboard, computePersonalDailyActivity, computeStats } from "./metrics.js";
+import { getYoutubeEmbedUrl } from "./tv-mode.js";
 import {
   createId,
   clearToken,
@@ -10,11 +14,11 @@ import {
   exportConfig,
   getSelectedConfig,
   importConfig,
+  readPanelOrder,
   readConfigs,
-  readRatings,
   readToken,
   upsertConfig,
-  writeRating,
+  writePanelOrder,
   writeSelectedConfigId,
   writeToken
 } from "./storage.js";
@@ -65,6 +69,10 @@ function readCurrentPage() {
     return "activity";
   }
 
+  if (window.location.hash === "#tv") {
+    return "tv";
+  }
+
   if (window.location.hash === "#config") {
     return "config";
   }
@@ -73,7 +81,7 @@ function readCurrentPage() {
 }
 
 function writeCurrentPage(page) {
-  const nextHash = page === "activity" ? "#activity" : page === "config" ? "#config" : "";
+  const nextHash = page === "activity" ? "#activity" : page === "config" ? "#config" : page === "tv" ? "#tv" : "";
   const nextUrl = `${window.location.pathname}${window.location.search}${nextHash}`;
   window.history.replaceState({}, "", nextUrl);
 }
@@ -304,6 +312,19 @@ function readSharedConfig() {
   }
 }
 
+function createBlankConfigDraft() {
+  return {
+    ...DEFAULT_CONFIG,
+    id: createId(),
+    name: ""
+  };
+}
+
+const PANEL_ORDER_DEFAULTS = {
+  dashboard: ["queue", "merged", "stats", "leaderboard", "ops"],
+  activity: ["team-activity", "my-activity"]
+};
+
 function useBootstrapState() {
   const sharedConfig = readSharedConfig();
   if (sharedConfig && sharedConfig !== "invalid") {
@@ -317,7 +338,6 @@ function useBootstrapState() {
     token,
     configs: readConfigs(),
     selectedConfig,
-    ratings: readRatings(),
     error: sharedConfig === "invalid" ? "Shared config link is invalid." : "",
     isLoading: false,
     lastUpdatedAt: "",
@@ -476,16 +496,203 @@ function PullCard({ pull, subtitle, score, statusLabel, children, token }) {
   );
 }
 
+function ListPager({ page, pageCount, onPrevious, onNext, label }) {
+  if (pageCount <= 1) {
+    return null;
+  }
+
+  return (
+    <div className="list-pager" aria-label={label}>
+      <button type="button" className="ghost" onClick={onPrevious} disabled={page === 0}>
+        {"<"}
+      </button>
+      <span className="muted">
+        {page + 1}/{pageCount}
+      </span>
+      <button type="button" className="ghost" onClick={onNext} disabled={page >= pageCount - 1}>
+        {">"}
+      </button>
+    </div>
+  );
+}
+
+function SortablePanelSlot({ item, span, masonryEnabled, isArranging, registerBodyRef }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !isArranging });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={isDragging ? "panel-slot is-dragging" : "panel-slot"}
+      style={{
+        ...(masonryEnabled ? { gridRowEnd: `span ${span || 1}` } : undefined),
+        transform: CSS.Transform.toString(transform),
+        transition
+      }}
+    >
+      <div
+        className={isArranging ? "panel-slot-shell is-arranging" : "panel-slot-shell"}
+        data-panel-id={item.id}
+        ref={registerBodyRef}
+      >
+        {isArranging ? (
+          <button
+            type="button"
+            className="panel-drag-handle"
+            aria-label={`Drag ${item.title} panel`}
+            title={`Drag ${item.title}`}
+            {...attributes}
+            {...listeners}
+          >
+            <span aria-hidden="true">::</span>
+          </button>
+        ) : null}
+        {item.node}
+      </div>
+    </div>
+  );
+}
+
+function PanelBoard({ layoutClassName, items, order, isArranging, onReorder }) {
+  const itemMap = new Map(items.map((item) => [item.id, item]));
+  const orderedItems = order.map((id) => itemMap.get(id)).filter(Boolean);
+  const slotBodyRefs = useRef({});
+  const [slotSpans, setSlotSpans] = useState({});
+  const masonryEnabled = layoutClassName.includes("layout-main-board");
+  const orderedItemIdsKey = orderedItems.map((item) => item.id).join("|");
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+
+  function areSpanMapsEqual(left, right) {
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) {
+      return false;
+    }
+
+    return leftKeys.every((key) => left[key] === right[key]);
+  }
+
+  useLayoutEffect(() => {
+    if (!masonryEnabled) {
+      setSlotSpans((current) => (Object.keys(current).length ? {} : current));
+      return undefined;
+    }
+
+    const rowHeight = 8;
+    const gap = 24;
+    const nextSpans = {};
+
+    function updateSpan(id, element) {
+      if (!element) {
+        return;
+      }
+
+      const height = element.getBoundingClientRect().height;
+      nextSpans[id] = Math.max(1, Math.ceil((height + gap) / (rowHeight + gap)));
+    }
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      setSlotSpans((current) => {
+        const updated = { ...current };
+        let changed = false;
+
+        for (const entry of entries) {
+          const id = entry.target.dataset.panelId;
+          if (!id) {
+            continue;
+          }
+
+          const height = entry.contentRect.height;
+          const nextSpan = Math.max(1, Math.ceil((height + gap) / (rowHeight + gap)));
+          if (updated[id] !== nextSpan) {
+            updated[id] = nextSpan;
+            changed = true;
+          }
+        }
+
+        return changed ? updated : current;
+      });
+    });
+
+    for (const item of orderedItems) {
+      const element = slotBodyRefs.current[item.id];
+      if (!element) {
+        continue;
+      }
+
+      updateSpan(item.id, element);
+      resizeObserver.observe(element);
+    }
+
+    setSlotSpans((current) => (areSpanMapsEqual(current, nextSpans) ? current : nextSpans));
+
+    return () => resizeObserver.disconnect();
+  }, [masonryEnabled, orderedItemIdsKey]);
+
+  function handleDragEnd(event) {
+    const { active, over } = event;
+    if (!isArranging || !over || active.id === over.id) {
+      return;
+    }
+
+    const oldIndex = order.indexOf(active.id);
+    const newIndex = order.indexOf(over.id);
+    if (oldIndex === -1 || newIndex === -1) {
+      return;
+    }
+
+    onReorder(arrayMove(order, oldIndex, newIndex));
+  }
+
+  return (
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={order} strategy={rectSortingStrategy}>
+        <section className={`${layoutClassName} panel-board${isArranging ? " is-arranging" : ""}`}>
+          {orderedItems.map((item) => (
+            <SortablePanelSlot
+              key={item.id}
+              item={item}
+              span={slotSpans[item.id]}
+              masonryEnabled={masonryEnabled}
+              isArranging={isArranging}
+              registerBodyRef={(element) => {
+                slotBodyRefs.current[item.id] = element;
+              }}
+            />
+          ))}
+        </section>
+      </SortableContext>
+    </DndContext>
+  );
+}
+
 function QueuePanel({ items, token }) {
+  const pageSize = 10;
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const visibleItems = items.slice(page * pageSize, (page + 1) * pageSize);
+
+  useEffect(() => {
+    setPage((currentPage) => Math.min(currentPage, pageCount - 1));
+  }, [pageCount]);
+
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>Review Queue</h2>
-        <span className="badge">{items.length}</span>
+        <div className="activity-totals">
+          <span className="badge">{items.length}</span>
+          <ListPager
+            page={page}
+            pageCount={pageCount}
+            label="Review queue pages"
+            onPrevious={() => setPage((currentPage) => currentPage - 1)}
+            onNext={() => setPage((currentPage) => currentPage + 1)}
+          />
+        </div>
       </div>
       <div className="card-list">
         {items.length ? (
-          items.map((pull) => (
+          visibleItems.map((pull) => (
             <PullCard
               key={pullKey(pull)}
               pull={pull}
@@ -503,39 +710,122 @@ function QueuePanel({ items, token }) {
   );
 }
 
-function MergedPanel({ items, ratings, onRate, token }) {
+function TvModePrItem({ pull, index }) {
+  return (
+    <li className="tv-mode-pr-item">
+      <div className="tv-mode-pr-avatar">
+        <AvatarImage src={pull.user?.avatar_url} alt={pull.user?.login || "author"} />
+      </div>
+      <div className="tv-mode-pr-copy">
+        <strong>{pull.title}</strong>
+        <span>{`${pull.repoName} · ${pull.user?.login || "unknown"} · ${relativeTime(pull.created_at)}`}</span>
+      </div>
+      <span className={pull.draft ? "tv-mode-pr-state is-draft" : "tv-mode-pr-state"}>
+        {pull.draft ? "Draft" : "Ready"}
+      </span>
+    </li>
+  );
+}
+
+function TvMode({ configName, streamUrl, queueItems }) {
+  const embedUrl = getYoutubeEmbedUrl(streamUrl);
+  const iframeRef = useRef(null);
+
+  useEffect(() => {
+    if (!embedUrl || !iframeRef.current) {
+      return undefined;
+    }
+
+    function commandPlayer(func, args = []) {
+      iframeRef.current?.contentWindow?.postMessage(
+        JSON.stringify({
+          event: "command",
+          func,
+          args
+        }),
+        "https://www.youtube.com"
+      );
+    }
+
+    function keepPlayerRunning() {
+      commandPlayer("mute");
+      commandPlayer("playVideo");
+    }
+
+    keepPlayerRunning();
+    const timer = window.setInterval(keepPlayerRunning, 1500);
+    return () => window.clearInterval(timer);
+  }, [embedUrl]);
+
+  return (
+    <main className="tv-mode-shell">
+      {embedUrl ? (
+        <>
+          <iframe
+            ref={iframeRef}
+            className="tv-mode-stream"
+            src={embedUrl}
+            title={`${configName || "Penguin Alarm"} livestream`}
+            allow="autoplay; encrypted-media; picture-in-picture"
+            referrerPolicy="strict-origin-when-cross-origin"
+          />
+          <div className="tv-mode-stream-shield" aria-hidden="true" />
+        </>
+      ) : (
+        <div className="tv-mode-stream tv-mode-stream-fallback">
+          <div>
+            <p className="tv-mode-kicker">TV Mode</p>
+            <h1>Add a YouTube livestream URL in config</h1>
+            <p>The PR overlay is ready, but this config does not have a valid YouTube livestream yet.</p>
+          </div>
+        </div>
+      )}
+      <section
+        className={queueItems.length ? "tv-mode-overlay is-active" : "tv-mode-overlay"}
+      >
+        <ol className="tv-mode-pr-list">
+          {queueItems.map((pull, index) => (
+            <TvModePrItem key={pullKey(pull)} pull={pull} index={index} />
+          ))}
+        </ol>
+      </section>
+    </main>
+  );
+}
+
+function MergedPanel({ items, token }) {
+  const pageSize = 10;
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const visibleItems = items.slice(page * pageSize, (page + 1) * pageSize);
+
+  useEffect(() => {
+    setPage((currentPage) => Math.min(currentPage, pageCount - 1));
+  }, [pageCount]);
+
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>Recently Merged</h2>
+        <ListPager
+          page={page}
+          pageCount={pageCount}
+          label="Recently merged pages"
+          onPrevious={() => setPage((currentPage) => currentPage - 1)}
+          onNext={() => setPage((currentPage) => currentPage + 1)}
+        />
       </div>
       <div className="card-list">
         {items.length ? (
-          items.map((pull) => {
-            const key = pullKey(pull);
-            return (
+          visibleItems.map((pull) => (
               <PullCard
-                key={key}
+                key={pullKey(pull)}
                 pull={pull}
                 subtitle={`${pull.repoName} · merged ${relativeTime(pull.merged_at)}`}
                 statusLabel="Merged"
                 token={token}
-              >
-                <div className="rating-row">
-                  {RATING_OPTIONS.map((option) => (
-                    <button
-                      type="button"
-                      key={option.value}
-                      className={ratings[key] === option.value ? "active" : ""}
-                      onClick={() => onRate(key, option.value)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </PullCard>
-            );
-          })
+              />
+          ))
         ) : (
           <p className="muted">No merged pull requests in the selected window.</p>
         )}
@@ -545,14 +835,30 @@ function MergedPanel({ items, ratings, onRate, token }) {
 }
 
 function LeaderboardPanel({ users, token }) {
+  const pageSize = 10;
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(users.length / pageSize));
+  const visibleUsers = users.slice(page * pageSize, (page + 1) * pageSize);
+
+  useEffect(() => {
+    setPage((currentPage) => Math.min(currentPage, pageCount - 1));
+  }, [pageCount]);
+
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>Leaderboard</h2>
+        <ListPager
+          page={page}
+          pageCount={pageCount}
+          label="Leaderboard pages"
+          onPrevious={() => setPage((currentPage) => currentPage - 1)}
+          onNext={() => setPage((currentPage) => currentPage + 1)}
+        />
       </div>
       <div className="card-list">
         {users.length ? (
-          users.slice(0, 12).map((user) => (
+          visibleUsers.map((user) => (
             <article className="card compact-card" key={user.login}>
               <div className="card-top">
                 <AvatarImage src={user.avatarUrl} alt={user.login} token={token} />
@@ -758,7 +1064,9 @@ export default function App() {
   const [tokenDraft, setTokenDraft] = useState(initialState.token);
   const [configs, setConfigs] = useState(initialState.configs);
   const [selectedConfig, setSelectedConfig] = useState(initialState.selectedConfig);
-  const [ratings, setRatings] = useState(initialState.ratings);
+  const [configDraft, setConfigDraft] = useState(initialState.selectedConfig || createBlankConfigDraft());
+  const [isCreatingConfig, setIsCreatingConfig] = useState(!initialState.selectedConfig);
+  const [isEditingConfig, setIsEditingConfig] = useState(false);
   const [error, setError] = useState(initialState.error);
   const [isLoading, setIsLoading] = useState(initialState.isLoading);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(initialState.lastUpdatedAt);
@@ -771,22 +1079,31 @@ export default function App() {
   const [statsOpenPulls, setStatsOpenPulls] = useState([]);
   const [statsMergedPulls, setStatsMergedPulls] = useState([]);
   const [includeOpenInStats, setIncludeOpenInStats] = useState(false);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [panelOrders, setPanelOrders] = useState(() => ({
+    dashboard: readPanelOrder("dashboard", PANEL_ORDER_DEFAULTS.dashboard),
+    activity: readPanelOrder("activity", PANEL_ORDER_DEFAULTS.activity)
+  }));
+  const [isArrangingPanels, setIsArrangingPanels] = useState(false);
+  const configSaveTimerRef = useRef(null);
 
   const config = selectedConfig || DEFAULT_CONFIG;
+  const formConfig = configDraft || DEFAULT_CONFIG;
+  const isConfigFormEditable = isCreatingConfig || isEditingConfig;
   const needsSetup = !(token && config?.repos.length);
-  const headerConfigOptions = configs.some((item) => item.id === config.id)
-    ? configs
-    : config.id
-      ? [config, ...configs]
-      : configs;
-  const shareUrl = selectedConfig ? getShareUrl(selectedConfig) : "";
+  const headerConfigOptions = configs;
+  const shareUrl = !isCreatingConfig && selectedConfig ? getShareUrl(selectedConfig) : "";
   const adapter = getAdapter(config.provider);
   const tokenAdapter = getAdapter(tokenProvider);
-  const repoInput = getRepoInputGuidance(config.provider);
+  const repoInput = getRepoInputGuidance(formConfig.provider);
   const tokenGuidance = getTokenGuidance(tokenProvider);
   const activity = useMemo(
     () => computeDailyActivity(statsOpenPulls, statsMergedPulls, config.botUsers || [], config.timeWindowDays),
     [config.botUsers, config.timeWindowDays, statsMergedPulls, statsOpenPulls]
+  );
+  const tvQueueItems = useMemo(
+    () => buildQueueItems(statsOpenPulls, "", "all"),
+    [statsOpenPulls]
   );
   const personalActivity = useMemo(
     () =>
@@ -819,6 +1136,24 @@ export default function App() {
   useEffect(() => {
     setTokenDraft(readToken(tokenProvider, config.id || ""));
   }, [tokenProvider, config.id]);
+
+  useEffect(() => {
+    if (!isCreatingConfig) {
+      setConfigDraft(selectedConfig || createBlankConfigDraft());
+    }
+  }, [isCreatingConfig, selectedConfig]);
+
+  useEffect(() => () => {
+    if (configSaveTimerRef.current) {
+      window.clearTimeout(configSaveTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (page === "config") {
+      setIsArrangingPanels(false);
+    }
+  }, [page]);
 
   useEffect(() => {
     if (needsSetup && page !== "config") {
@@ -938,14 +1273,28 @@ export default function App() {
 
   function handleConfigSave(event) {
     event.preventDefault();
+    setIsSavingConfig(true);
+    if (configSaveTimerRef.current) {
+      window.clearTimeout(configSaveTimerRef.current);
+    }
     const form = new FormData(event.currentTarget);
-    const nextConfig = upsertConfig(Object.fromEntries(form.entries()));
+    const nextConfig = upsertConfig({
+      ...Object.fromEntries(form.entries()),
+      id: isCreatingConfig ? "" : formConfig.id || ""
+    });
     setConfigs(readConfigs());
     setSelectedConfig(nextConfig);
+    setConfigDraft(nextConfig);
+    setIsCreatingConfig(false);
+    setIsEditingConfig(false);
     const configToken = readToken(nextConfig.provider, nextConfig.id || "");
     setToken(configToken);
     setTokenProvider(nextConfig.provider);
     setTokenDraft(configToken);
+    configSaveTimerRef.current = window.setTimeout(() => {
+      setIsSavingConfig(false);
+      configSaveTimerRef.current = null;
+    }, 450);
   }
 
   function handleSelectConfig(event) {
@@ -955,6 +1304,9 @@ export default function App() {
     const nextToken = readToken(nextProvider, nextSelected?.id || "");
 
     setSelectedConfig(nextSelected);
+    setConfigDraft(nextSelected || createBlankConfigDraft());
+    setIsCreatingConfig(!nextSelected);
+    setIsEditingConfig(false);
     setToken(nextToken);
     setTokenProvider(nextProvider);
     setTokenDraft(nextToken);
@@ -969,12 +1321,22 @@ export default function App() {
     const nextSelected = getSelectedConfig();
     setConfigs(readConfigs());
     setSelectedConfig(nextSelected);
+    setConfigDraft(nextSelected || createBlankConfigDraft());
+    setIsCreatingConfig(!nextSelected);
+    setIsEditingConfig(false);
     setToken(readToken(nextSelected?.provider || "github", nextSelected?.id || ""));
   }
 
-  function handleRate(prKey, rating) {
-    writeRating(prKey, rating);
-    setRatings(readRatings());
+  function handleStartNewConfig() {
+    setConfigDraft(createBlankConfigDraft());
+    setIsCreatingConfig(true);
+    setIsEditingConfig(false);
+  }
+
+  function handleEditSelectedConfig() {
+    setConfigDraft(selectedConfig || DEFAULT_CONFIG);
+    setIsCreatingConfig(false);
+    setIsEditingConfig(true);
   }
 
   async function handleCopyShare() {
@@ -988,6 +1350,64 @@ export default function App() {
   function handleNavigate(nextPage) {
     setPage(nextPage);
     writeCurrentPage(nextPage);
+  }
+
+  function handlePanelReorder(pageKey, nextOrder) {
+    setPanelOrders((current) => ({ ...current, [pageKey]: nextOrder }));
+    writePanelOrder(pageKey, nextOrder);
+  }
+
+  const dashboardPanels = [
+    { id: "queue", title: "Review Queue", node: <QueuePanel items={queueItems} token={token} /> },
+    { id: "merged", title: "Recently Merged", node: <MergedPanel items={mergedItems} token={token} /> },
+    {
+      id: "stats",
+      title: "Team Stats",
+      node: (
+        <StatPanel
+          stats={stats}
+          includeOpenInStats={includeOpenInStats}
+          onToggleIncludeOpen={() => setIncludeOpenInStats((value) => !value)}
+        />
+      )
+    },
+    { id: "leaderboard", title: "Leaderboard", node: <LeaderboardPanel users={leaderboard} token={token} /> },
+    { id: "ops", title: "Production", node: <OpsPanel /> }
+  ];
+
+  const activityPanels = [
+    {
+      id: "team-activity",
+      title: "Daily Activity",
+      node: (
+        <ActivityPanel
+          title="Daily Activity"
+          activity={activity}
+          emptyMessage="Load repos to see daily approvals, comments, and merges."
+        />
+      )
+    },
+    {
+      id: "my-activity",
+      title: "My Activity",
+      node: (
+        <ActivityPanel
+          title="My Activity"
+          activity={personalActivity}
+          emptyMessage="Load repos to see your daily approvals, comments, and merged PRs."
+        />
+      )
+    }
+  ];
+
+  if (page === "tv") {
+    return (
+      <TvMode
+        configName={config.name}
+        streamUrl={config.youtubeLivestreamUrl}
+        queueItems={tvQueueItems}
+      />
+    );
   }
 
   return (
@@ -1017,9 +1437,25 @@ export default function App() {
             >
               Config
             </button>
+            <button
+              type="button"
+              className={page === "tv" ? "hero-view-link is-active" : "hero-view-link"}
+              onClick={() => handleNavigate("tv")}
+            >
+              TV Mode
+            </button>
           </nav>
         </div>
         <div className="hero-status">
+          {(page === "dashboard" || page === "activity") ? (
+            <button
+              type="button"
+              className={isArrangingPanels ? "toggle-chip is-active" : "toggle-chip"}
+              onClick={() => setIsArrangingPanels((value) => !value)}
+            >
+              {isArrangingPanels ? "Done arranging" : "Arrange panels"}
+            </button>
+          ) : null}
           {isLoading ? (
             <span className="header-refresh-status" aria-live="polite">
               <span className="header-refresh-dot" aria-hidden="true" />
@@ -1091,35 +1527,36 @@ export default function App() {
           </a>
           </section>
 
-          <section className="panel">
+          <section className={isCreatingConfig ? "panel config-panel is-new" : isEditingConfig ? "panel config-panel is-editing" : "panel config-panel"}>
           <div className="panel-header">
             <h2>Monitor Config</h2>
             <div className="row compact">
-              <select value={config.id || ""} onChange={handleSelectConfig}>
-                {configs.map((savedConfig) => (
-                  <option value={savedConfig.id} key={savedConfig.id}>
-                    {savedConfig.name}
-                  </option>
-                ))}
-              </select>
               <button
                 type="button"
-                className="ghost"
-                onClick={() => setSelectedConfig({ ...DEFAULT_CONFIG, id: createId() })}
+                className={isCreatingConfig ? "ghost config-new-trigger is-active" : "ghost config-new-trigger"}
+                onClick={handleStartNewConfig}
               >
                 New
               </button>
+              <button
+                type="button"
+                className={isEditingConfig ? "ghost config-new-trigger is-active" : "ghost config-new-trigger"}
+                onClick={handleEditSelectedConfig}
+                disabled={!selectedConfig}
+              >
+                Edit
+              </button>
             </div>
           </div>
-          <form className="stack" key={config.id || "new"} onSubmit={handleConfigSave}>
-            <input type="hidden" name="id" value={config.id || ""} />
+          <form className={isCreatingConfig ? "stack config-form is-new" : "stack config-form"} key={`${formConfig.id || "new"}-${isCreatingConfig ? "create" : "edit"}`} onSubmit={handleConfigSave}>
+            <input type="hidden" name="id" value={formConfig.id || ""} />
             <label>
               <span>Name</span>
-              <input name="name" defaultValue={config.name} />
+              <input name="name" defaultValue={formConfig.name} placeholder="Untitled config" disabled={!isConfigFormEditable} />
             </label>
             <label>
               <span>Platform</span>
-              <select name="provider" defaultValue={config.provider}>
+              <select name="provider" defaultValue={formConfig.provider} disabled={!isConfigFormEditable}>
                 {PROVIDERS.map((provider) => (
                   <option value={provider.value} key={provider.value}>
                     {provider.label}
@@ -1132,8 +1569,9 @@ export default function App() {
               <textarea
                 name="repos"
                 rows="5"
-                defaultValue={config.repos.join("\n")}
+                defaultValue={formConfig.repos.join("\n")}
                 placeholder={repoInput.placeholder}
+                disabled={!isConfigFormEditable}
               />
               <span className="muted">{repoInput.help}</span>
             </label>
@@ -1142,8 +1580,9 @@ export default function App() {
               <textarea
                 name="teamMembers"
                 rows="4"
-                defaultValue={(config.teamMembers || []).join("\n")}
+                defaultValue={(formConfig.teamMembers || []).join("\n")}
                 placeholder="alice\nbob\ncarol"
+                disabled={!isConfigFormEditable}
               />
               <span className="muted">Only PRs opened by these usernames will show up in the dashboard.</span>
             </label>
@@ -1152,8 +1591,9 @@ export default function App() {
               <textarea
                 name="botUsers"
                 rows="3"
-                defaultValue={(config.botUsers || []).join("\n")}
+                defaultValue={(formConfig.botUsers || []).join("\n")}
                 placeholder="devops-org-admin\nrenovate[bot]"
+                disabled={!isConfigFormEditable}
               />
               <span className="muted">These usernames are excluded from review timing stats and the leaderboard.</span>
             </label>
@@ -1162,23 +1602,35 @@ export default function App() {
               <textarea
                 name="repoGroups"
                 rows="2"
-                defaultValue={config.repoGroups.join("\n")}
+                defaultValue={formConfig.repoGroups.join("\n")}
                 placeholder="payments, frontend"
+                disabled={!isConfigFormEditable}
               />
+            </label>
+            <label>
+              <span>YouTube livestream URL</span>
+              <input
+                name="youtubeLivestreamUrl"
+                type="url"
+                defaultValue={formConfig.youtubeLivestreamUrl || ""}
+                placeholder="https://www.youtube.com/watch?v=..."
+                disabled={!isConfigFormEditable}
+              />
+              <span className="muted">Used by TV mode. Supports standard YouTube watch, live, embed, and youtu.be links.</span>
             </label>
             <div className="grid two">
               <label>
                 <span>Time window (days)</span>
-                <input name="timeWindowDays" type="number" min="1" defaultValue={config.timeWindowDays} />
+                <input name="timeWindowDays" type="number" min="1" defaultValue={formConfig.timeWindowDays} disabled={!isConfigFormEditable} />
               </label>
               <label>
                 <span>Polling (minutes)</span>
-                <input name="pollingMinutes" type="number" min="1" defaultValue={config.pollingMinutes} />
+                <input name="pollingMinutes" type="number" min="1" defaultValue={formConfig.pollingMinutes} disabled={!isConfigFormEditable} />
               </label>
             </div>
             <label>
               <span>Queue filter</span>
-              <select name="queueFilter" defaultValue={config.queueFilter}>
+              <select name="queueFilter" defaultValue={formConfig.queueFilter} disabled={!isConfigFormEditable}>
                 {QUEUE_FILTERS.map((filter) => (
                   <option value={filter.value} key={filter.value}>
                     {filter.label}
@@ -1187,8 +1639,11 @@ export default function App() {
               </select>
             </label>
             <div className="row">
-              <button type="submit">Save config</button>
-              <button type="button" className="ghost" disabled={!config.id} onClick={handleDeleteConfig}>
+              <button type="submit" className={isSavingConfig ? "button-with-spinner is-saving" : "button-with-spinner"} disabled={isSavingConfig || !isConfigFormEditable}>
+                <span className="button-label">{isCreatingConfig ? "Create config" : "Save config"}</span>
+                {isSavingConfig ? <span className="button-spinner" aria-hidden="true" /> : null}
+              </button>
+              <button type="button" className="ghost" disabled={!selectedConfig?.id || !isEditingConfig} onClick={handleDeleteConfig}>
                 Delete
               </button>
               <button type="button" className="ghost" onClick={() => void loadDashboard()}>
@@ -1212,34 +1667,21 @@ export default function App() {
           </section>
         </section>
       ) : page === "dashboard" ? (
-        <section className="layout-main">
-          <div className="stack">
-            <QueuePanel items={queueItems} token={token} />
-            <MergedPanel items={mergedItems} ratings={ratings} onRate={handleRate} token={token} />
-          </div>
-          <div className="stack">
-            <StatPanel
-              stats={stats}
-              includeOpenInStats={includeOpenInStats}
-              onToggleIncludeOpen={() => setIncludeOpenInStats((value) => !value)}
-            />
-            <LeaderboardPanel users={leaderboard} token={token} />
-          </div>
-          <OpsPanel />
-        </section>
+        <PanelBoard
+          layoutClassName="layout-main layout-main-board"
+          items={dashboardPanels}
+          order={panelOrders.dashboard}
+          isArranging={isArrangingPanels}
+          onReorder={(nextOrder) => handlePanelReorder("dashboard", nextOrder)}
+        />
       ) : (
-        <section className="layout-activity">
-          <ActivityPanel
-            title="Daily Activity"
-            activity={activity}
-            emptyMessage="Load repos to see daily approvals, comments, and merges."
-          />
-          <ActivityPanel
-            title="My Activity"
-            activity={personalActivity}
-            emptyMessage="Load repos to see your daily approvals, comments, and merged PRs."
-          />
-        </section>
+        <PanelBoard
+          layoutClassName="layout-activity"
+          items={activityPanels}
+          order={panelOrders.activity}
+          isArranging={isArrangingPanels}
+          onReorder={(nextOrder) => handlePanelReorder("activity", nextOrder)}
+        />
       )}
     </main>
   );

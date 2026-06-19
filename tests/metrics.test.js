@@ -101,6 +101,24 @@ test("queue orders merge-now, needs-attention, then already-approved", () => {
   assert.equal(items[2].viewerApproved, true);
 });
 
+test("team queue is not personalized when no viewer login is provided", () => {
+  const requested = makePull({
+    created_at: "2026-06-10T00:00:00Z",
+    requested_reviewers: [{ login: "sam" }]
+  });
+  const ownApproved = makePull({
+    created_at: "2026-06-10T00:00:00Z",
+    user: { login: "sam", avatar_url: "https://example.com/sam.png" },
+    reviews: [{ state: "APPROVED", submitted_at: "2026-06-11T00:00:00Z", user: { login: "lea" } }]
+  });
+
+  const items = buildQueueItems([requested, ownApproved], "", "all");
+  assert.equal(items[0].isOwnPull, false);
+  assert.equal(items[0].viewerApproved, false);
+  assert.equal(items[0].ownPullHasAnyApproval, false);
+  assert.equal(items[1].isOwnPull, false);
+});
+
 test("stats return medians, averages, and rates from pull lifecycle data", () => {
   const merged = [
     makePull({

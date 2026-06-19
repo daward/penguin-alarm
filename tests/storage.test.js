@@ -53,9 +53,11 @@ test("normalizeConfig parses bot users alongside team members", () => {
     name: "Example",
     repos: "acme/api",
     teamMembers: "alice\nbob",
-    botUsers: "devops-org-admin\nrenovate[bot]"
+    botUsers: "devops-org-admin\nrenovate[bot]",
+    youtubeLivestreamUrl: " https://www.youtube.com/watch?v=jfKfPfyJRdk "
   });
 
   assert.deepEqual(config.teamMembers, ["alice", "bob"]);
   assert.deepEqual(config.botUsers, ["devops-org-admin", "renovate[bot]"]);
+  assert.equal(config.youtubeLivestreamUrl, "https://www.youtube.com/watch?v=jfKfPfyJRdk");
 });

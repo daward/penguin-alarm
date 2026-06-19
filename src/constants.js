@@ -2,7 +2,8 @@ export const STORAGE_KEYS = {
   providerTokens: "penguin-alarm.provider-tokens",
   configs: "penguin-alarm.configs",
   selectedConfigId: "penguin-alarm.selected-config-id",
-  ratings: "penguin-alarm.merge-ratings"
+  ratings: "penguin-alarm.merge-ratings",
+  panelOrders: "penguin-alarm.panel-orders"
 };
 
 export const DEFAULT_CONFIG = {
@@ -13,6 +14,7 @@ export const DEFAULT_CONFIG = {
   teamMembers: [],
   botUsers: [],
   repoGroups: [],
+  youtubeLivestreamUrl: "",
   timeWindowDays: 14,
   queueFilter: "all",
   pollingMinutes: 5
@@ -41,10 +43,4 @@ export const QUEUE_FILTERS = [
   { value: "all", label: "All open PRs" },
   { value: "requested", label: "Requested for me" },
   { value: "participating", label: "Mentioned or commented" }
-];
-
-export const RATING_OPTIONS = [
-  { value: "smooth", label: "Smooth" },
-  { value: "neutral", label: "Neutral" },
-  { value: "painful", label: "Painful" }
 ];
